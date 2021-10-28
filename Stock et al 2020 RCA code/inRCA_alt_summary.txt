@@ -1,0 +1,27 @@
+Avg (11%):
+Source: local data frame [2 x 7]
+
+  inRCA_2  propDBRK  meanDBRK  propPHLB meanPHLB    propYEYE meanYEYE
+1       0 0.1632501  72.73648 0.2756119 103.1718 0.003205367 8.364177
+2       1 0.4287962 146.24586 0.4968529 105.9542 0.005507474 8.652943
+
+Set AND Up (2.8%):
+Source: local data frame [2 x 7]
+
+  inRCA_3  propDBRK  meanDBRK  propPHLB  meanPHLB    propYEYE  meanYEYE
+1       0 0.1706842  78.04842 0.2816218 103.73977 0.003340623  8.300719
+2       1 0.4736842 148.72177 0.5407470  98.24107 0.003395586 11.580000
+
+1km buffer (4.4%):
+Source: local data frame [2 x 7]
+
+  inRCA_4  propDBRK  meanDBRK  propPHLB meanPHLB    propYEYE meanYEYE
+1       0 0.1678323  73.88231 0.2791255 102.2549 0.003374743  8.13529
+2       1 0.4205805 163.40316 0.4965699 118.0283 0.002638522 15.49000
+
+Set AND Up AND buffer (1.4%):
+Source: local data frame [2 x 7]
+
+  inRCA_6  propDBRK  meanDBRK  propPHLB meanPHLB    propYEYE  meanYEYE
+1       0 0.1746013  80.08523 0.2854333 103.4538 0.003365009  8.343099
+2       1 0.4965986 161.70777 0.5272109 103.5520 0.001700680 15.400000
