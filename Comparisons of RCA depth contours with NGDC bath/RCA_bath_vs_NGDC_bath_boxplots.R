@@ -7,7 +7,7 @@
 library(tidyverse)
 
 # set working directory where file is located
-setwd("~/Documents/R/RCAs/Comparisons of NOAA depth contours with NGDC bath")
+setwd("~/Documents/GitHub/RCA_closure_areas/Comparisons of RCA depth contours with NGDC bath")
 
 # load .csv file of NOAA OLE RCA bathymetry isobath vertices overlaid on NGDC bathymetry grid to dataframe named rca
 rca <- read.table("RCA_line_densified_vertices_RAW.csv", h=TRUE, sep=",")
@@ -38,7 +38,7 @@ cols <- brewer.pal(3, "Blues")
 # interpolate (create color ramp) "GnBu" palette function to pal
 pal <- colorRampPalette(cols)
 
-# create boxplot from data and use the pal function to vreate the 11 colors needed
+# create boxplot from data and use the pal function to create the 11 colors needed
 boxplot(NGDC_M ~ DEPT_CAT_M, data = rca,
   xlab = "RCA depth contour (m)",
   ylab = "NGDC depth at vertex (m, vertices densified at 100m intervals)",
