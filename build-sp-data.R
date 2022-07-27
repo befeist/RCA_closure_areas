@@ -20,6 +20,8 @@ coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/'
 ## files
 rca_data        <- 'Historical_trawl_RCA_2002-2021_CEW_LC_01Oct2021.xlsx'
 rca_gdb         <- 'RCA_Mapping_Project_4Cal_Poly.gdb'
+north_bound     <- 'revised-sp/north-south-bounds/eez_north.shp'
+south_bound     <- 'revised-sp/north-south-bounds/eez_south.shp'
 
 ## specify inputs
 rca_crs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
@@ -121,7 +123,9 @@ poly_df <- janitor::clean_names(poly_df_orig) %>%
   ## change 0 fm () for matching
   mutate(boundary_name = gsub("[()]", "", boundary_name),
          boundary_name = str_remove(boundary_name, pattern = "0 fm ")) %>%
-  select(SiteName, year_month, land_ref, ns_bounds, boundary_type, boundary_dir, boundary_name)
+  select(SiteName, year_month, land_ref, ns_bounds, boundary_type, boundary_dir, boundary_name) %>%
+  mutate(boundary_name = ifelse(boundary_name == "U.S. EEZ Boundary" & boundary_dir == "northern", "U.S. EEZ Boundary North",
+                                ifelse(boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern", "U.S. EEZ Boundary South", boundary_name)))
 
 
 
@@ -144,6 +148,27 @@ lat_df <- rca_spf[[37]] %>%
 ## check to see if all northern/southern boundaries are in lat_df
 setdiff(unique(poly_df %>% filter(boundary_dir %in% c('northern', 'southern')) %>% pull(boundary_name)),
         unique(lat_df %>% pull(boundary_name)))
+
+## read in northern and southern us boundaries
+north_eez <- read_sf(file.path(data_path, north_bound)) %>%
+  st_transform(rca_crs) %>%
+  filter(OBJECTID == 1) %>%
+  mutate(boundary_type = 'latitude',
+         boundary_name = 'U.S. EEZ Boundary North',
+         area_name = 'U.S. EEZ Boundary North') %>%
+  select(boundary_type, boundary_name, area_name, shape = geometry)
+
+south_eez <- read_sf(file.path(data_path, south_bound)) %>%
+  st_transform(rca_crs) %>%
+  filter(OBJECTID == 1) %>%
+  mutate(boundary_type = 'latitude',
+        boundary_name = 'U.S. EEZ Boundary South',
+        area_name = 'U.S. EEZ Boundary South') %>%
+  select(boundary_type, boundary_name, area_name, shape = geometry)
+
+## bind
+lat_df <- rbind(lat_df, north_eez, south_eez)
+
 
 ## create shoreline with islands in case needed
 shoreline_isl <- rca_spf[[1]] %>%
@@ -236,6 +261,11 @@ for(i in 1:length(unique(iso_out_sp_filt$isobath))) {
 ## combine lats and isobaths, plot polygons
 ## -----------------------------------------------
 
+iso_df <- iso_out_lines %>%
+  mutate(boundary_type = "isobath",
+         boundary_name = isobath) %>%
+  select(area_name, boundary_type, boundary_name, shape = geometry)
+
 boundary_df <- rbind(lat_df, iso_df)
 
 ## join with poly_df
@@ -252,14 +282,22 @@ for(i in 1:length(rca_ids)) {
   tmp_rca_name <- rca_ids[i]
   
   tmp_b_df <- full_boundary_df %>%
-    filter(SiteName == tmp_rca_name)
+    filter(SiteName == tmp_rca_name) 
+  
+  ## find N, S, E, W points for boundaries
+  
+  
+  
+  
+  
+  tmp2 <- st_cast(st_polygonize(st_union(tmp_b_df)))
   
   temp_fig <- ggplot(tmp_b_df) +
     geom_sf(aes(color = boundary_name)) +
-    labs(title = tmp_rca_name) +
-    theme(legend.position = "bottom")
+    # labs(title = tmp_rca_name) +
+    theme(legend.position = "none")
   
-  ggsave(temp_fig, filename = paste0(data_path, "diagnostic/isobaths/", tmp_iso_name, ".pdf"))
+  # ggsave(temp_fig, filename = paste0(data_path, "diagnostic/isobaths/", tmp_iso_name, ".pdf"))
   
   
 }
