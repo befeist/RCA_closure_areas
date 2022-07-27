@@ -240,7 +240,8 @@ boundary_df <- rbind(lat_df, iso_df)
 
 ## join with poly_df
 full_boundary_df <- poly_df %>%
-  left_join(boundary_df)
+  left_join(boundary_df) %>%
+  st_as_sf()
 
 ## try to create a polygon
 rca_ids <- unique(full_boundary_df$SiteName)
