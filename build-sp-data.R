@@ -128,7 +128,12 @@ poly_df <- janitor::clean_names(poly_df_orig) %>%
                                 ifelse(boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern", "U.S. EEZ Boundary South", boundary_name)))
 
 
-
+## View poly info
+rca_cases <- janitor::clean_names(poly_df_orig) %>% 
+  mutate(year = as.numeric(substr(year_month, 1, 4)),
+         mo = as.numeric(substr(year_month, 6, 7))) %>% 
+  filter(year >= 2010 & year <= 2017) %>%
+  arrange(year, mo)
 
 
 ## polygon generation info ----------------------
@@ -282,12 +287,34 @@ for(i in 1:length(rca_ids)) {
   tmp_rca_name <- rca_ids[i]
   
   tmp_b_df <- full_boundary_df %>%
-    filter(SiteName == tmp_rca_name) 
+    filter(SiteName == tmp_rca_name) %>%
+    group_by(SiteName, year_month, land_ref, boundary_type, boundary_dir, boundary_name) %>%
+    summarize(geometry = st_union(shape)) %>%
+    ungroup()
   
-  ## find N, S, E, W points for boundaries
+  ## get bounding box for north south
+  north_bb <- tmp_b_df %>% filter(boundary_dir == "northern")
+  south_bb <- tmp_b_df %>% filter(boundary_dir == "southern")
   
+  bbox_ns <- st_union(north_bb, south_bb) %>% 
+    st_bbox()
   
+  ## crop seaward and shoreward
+  seaward_crop <- tmp_b_df %>% filter(boundary_dir == "seaward")
+  seaward_crop <- st_crop(seaward_crop, bbox_ns)
   
+  ## crop seaward and shoreward
+  shore_crop <- tmp_b_df %>% filter(boundary_dir == "shoreward")
+  shore_crop <- st_crop(shore_crop, bbox_ns)
+  
+  ## combine
+  adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
+
+  ## union
+  rca_polygon <- st_union(adj_poly_lines)
+  
+  #polygonize that to get the polygon we want
+  rca_polygon <- st_polygonize(rca_polygon)
   
   
   tmp2 <- st_cast(st_polygonize(st_union(tmp_b_df)))
