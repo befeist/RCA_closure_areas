@@ -207,7 +207,7 @@ isobath_vec <- unique(iso_out_sp_filt$isobath)
 ## create lines from iso_out_sp
 iso_out_lines <- iso_out_sp_filt %>%
   group_by(isobath, area_name) %>%
-  summarise(do_union = FALSE) %>%
+  summarise(do_union = FALSE) %>% ## is this setting correct?
   st_cast("LINESTRING") %>%
   ungroup()
 
@@ -281,16 +281,83 @@ full_boundary_df <- poly_df %>%
 ## try to create a polygon
 rca_ids <- unique(full_boundary_df$SiteName)
 
+## create an example ----------------------------------------------------
+## ----------------------------------------------------------------------
+
+tmp_rca_name <- rca_ids[1]
+
+## fix it jesus
+tmp_b_df <- full_boundary_df %>%
+  filter(SiteName == tmp_rca_name) %>%
+  mutate(area = str_extract(area_name, pattern = "Coastwide"),
+         area = ifelse(boundary_dir %in% c("northern", "southern"), "Coastwide", area)) %>%
+  filter(area == 'Coastwide') 
+
+# %>%
+#   group_by(SiteName, year_month, land_ref, boundary_type, boundary_dir, boundary_name) %>%
+#   summarize(geometry = st_union(shape)) %>%
+#   ungroup()
+
+## get bounding box for north south
+north_bb <- tmp_b_df %>% filter(boundary_dir == "northern")
+south_bb <- tmp_b_df %>% filter(boundary_dir == "southern")
+
+bbox_ns <- st_union(north_bb, south_bb) %>% 
+  st_bbox()
+
+## crop seaward and shoreward
+seaward_crop <- tmp_b_df %>% filter(boundary_dir == "seaward")
+seaward_crop <- st_crop(seaward_crop, bbox_ns)
+
+## crop seaward and shoreward
+shore_crop <- tmp_b_df %>% filter(boundary_dir == "shoreward")
+shore_crop <- st_crop(shore_crop, bbox_ns)
+
+## combine
+adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
+
+## public version for help asking questions
+public_df <- adj_poly_lines %>%
+  select(boundary_dir)
+
+
+
+
+## union
+# rca_polygon <- st_union(adj_poly_lines)
+rca_polygon <- st_cast(adj_poly_lines, "MULTILINESTRING")
+rca_polygoni <- st_intersection(adj_poly_lines$geometry)
+
+
+rca_polygon2 <- st_polygonize(st_union(rca_polygoni))
+rca_polygon2 <- st_collection_extract(st_polygonize(st_union(rca_polygoni)))
+
+## save
+st_write(public_df, dsn = paste0(data_path, "diagnostic/example/sp_example.shp"))
+
+## make sample data for user 
+
+
+
+
 ## plot and create polygon
 for(i in 1:length(rca_ids)) {
   
   tmp_rca_name <- rca_ids[i]
   
+  ## fix it jesus
   tmp_b_df <- full_boundary_df %>%
     filter(SiteName == tmp_rca_name) %>%
-    group_by(SiteName, year_month, land_ref, boundary_type, boundary_dir, boundary_name) %>%
-    summarize(geometry = st_union(shape)) %>%
-    ungroup()
+    mutate(area = str_extract(area_name, pattern = "Coastwide"),
+           area = ifelse(boundary_dir %in% c("northern", "southern"), "Coastwide", area)) %>%
+    filter(area == 'Coastwide') 
+  
+  
+  
+  # %>%
+  #   group_by(SiteName, year_month, land_ref, boundary_type, boundary_dir, boundary_name) %>%
+  #   summarize(geometry = st_union(shape)) %>%
+  #   ungroup()
   
   ## get bounding box for north south
   north_bb <- tmp_b_df %>% filter(boundary_dir == "northern")
@@ -310,19 +377,40 @@ for(i in 1:length(rca_ids)) {
   ## combine
   adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
 
+  ## public version for help asking questions
+  public_df <- adj_poly_lines %>%
+    select(boundary_dir)
+  
+  ## save
+  st_write(public_df, dsn = paste0(data_path, "diagnostic/example/sp_example.shp"))
+  
+  ## two lines?
+  test <- public_df %>%
+    st_union()
+  
+  testp <- test %>% 
+    st_polygonize()
+
+
   ## union
-  rca_polygon <- st_union(adj_poly_lines)
+  # rca_polygon <- st_union(adj_poly_lines)
+  rca_polygon <- st_cast(adj_poly_lines, "MULTILINESTRING")
+  rca_polygoni <- st_intersection(adj_poly_lines$shape)
+  rca_polygon2 <- st_polygonize(st_union(rca_polygon))
+  rca_polygon2 <- st_collection_extract(st_polygonize(st_union(rca_polygoni)))
   
-  #polygonize that to get the polygon we want
-  rca_polygon <- st_polygonize(rca_polygon)
   
   
-  tmp2 <- st_cast(st_polygonize(st_union(tmp_b_df)))
-  
-  temp_fig <- ggplot(tmp_b_df) +
-    geom_sf(aes(color = boundary_name)) +
-    # labs(title = tmp_rca_name) +
-    theme(legend.position = "none")
+  # #polygonize that to get the polygon we want
+  # rca_polygon <- st_polygonize(rca_polygon)
+  # 
+  # 
+  # tmp2 <- st_cast(st_polygonize(st_union(tmp_b_df)))
+  # 
+  # temp_fig <- ggplot(tmp_b_df) +
+  #   geom_sf(aes(color = boundary_name)) +
+  #   # labs(title = tmp_rca_name) +
+  #   theme(legend.position = "none")
   
   # ggsave(temp_fig, filename = paste0(data_path, "diagnostic/isobaths/", tmp_iso_name, ".pdf"))
   
