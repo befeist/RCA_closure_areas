@@ -50,36 +50,49 @@ rca_spf <- purrr::map(gdb_layers$name, ~st_read(dsn = paste0(data_path, rca_gdb)
 rca_spf2 <- tibble(layer_name = gdb_layers$name,
                    sp_info = rca_spf)
 
+## line test
+test_shorew <- rca_spf2[18,2][1]
+test_shorew <- unnest(test_shorew, sp_info) %>% st_as_sf()
+
+test_seaw <- rca_spf2[3,2][1]
+test_seaw <- unnest(test_seaw, sp_info) %>% st_as_sf()
+
+
+
 ## master lines
 master_lines <- rca_spf2[45,2][1]
 
-master_lines <- unnest(master_lines, sp_info) %>%
-  filter()
+master_lines <- unnest(master_lines, sp_info) 
   
+## line test
 
-# ## isobath files
-# iso_list <- list.files(coord_path)
-# 
-# iso_out_list <- list()
-# 
-# for (i in 1:length(iso_list)) {
-# 
-#   print(i)
-# 
-#   iso_tmp_name <- iso_list[i]
-# 
-#   iso_tmp_df <- read_csv(paste0(coord_path, iso_tmp_name)) %>%
-#     mutate(isobath = iso_tmp_name) %>%
-#     select(isobath, id_area:lon_dd)
-# 
-#   iso_out_list[[i]] <- iso_tmp_df
-# 
-# }
-# 
-# iso_out_all <- rbindlist(iso_out_list) %>%
-#   rename(longitude = lon_dd,
-#          latitude = lat_dd)
-# 
+
+## isobath files
+iso_list <- list.files(coord_path)
+
+iso_out_list <- list()
+
+for (i in 1:length(iso_list)) {
+
+  print(i)
+
+  iso_tmp_name <- iso_list[i]
+
+  iso_tmp_df <- read_csv(paste0(coord_path, iso_tmp_name)) %>%
+    mutate(isobath = iso_tmp_name) %>%
+    select(isobath, id_area:lon_dd)
+
+  iso_out_list[[i]] <- iso_tmp_df
+
+}
+
+iso_out_all <- rbindlist(iso_out_list) %>%
+  rename(longitude = lon_dd,
+         latitude = lat_dd)
+
+iso_area_name <- iso_out_all %>%
+  select(isobath, area_name)
+
 # iso_out_sp <- st_as_sf(x = iso_out_all,
 #                        coords = c("longitude", "latitude"),
 #                        crs = rca_crs)
@@ -204,7 +217,8 @@ south_eez <- read_sf(file.path(data_path, south_bound)) %>%
   select(boundary_type, boundary_name, area_name, shape = geometry)
 
 ## bind
-lat_df <- rbind(lat_df, north_eez, south_eez)
+lat_df <- rbind(lat_df, north_eez, south_eez) %>%
+  filter(boundary_type != "isobath")
 
 
 ## create shoreline with islands in case needed
@@ -212,18 +226,67 @@ shoreline_isl <- rca_spf[[1]] %>%
   st_combine()
 
 shoreline_isl_df <- tibble(boundary_type = "isobath",
-                           boundary_name = "Shoreline with isl",
-                           shape = shoreline_isl)
+                           boundary_name = "Shoreline",
+                           shape = shoreline_isl) %>%
+  st_as_sf()
 
-# ## isobaths
-# ## ------------------------------------------------
-# 
-# ## unique isobaths in poly df
-# iso_polys <- poly_df %>%
-#   filter(boundary_type == "isobath") %>%
-#   select(boundary_name) %>%
-#   unique()
-# 
+## isobaths
+## ------------------------------------------------
+
+## unique isobaths in poly df
+iso_polys <- poly_df %>%
+  filter(boundary_type == "isobath") %>%
+  select(boundary_name) %>%
+  unique()
+
+missing_isos <- setdiff(iso_polys %>% select(boundary_name) %>% unique(),
+                        master_lines %>% select(boundary_name = CoordFileName) %>% unique())
+
+## filter masterline for the boundaries needed
+iso_filt <- master_lines %>%
+  filter(CoordFileName %in% iso_polys$boundary_name)
+
+## test
+test_line <- iso_filt %>% 
+  filter(CoordFileName %in% c("100fm_010119.csv", "150fm_010119.csv")) %>% 
+  select(CoordFileName, Shape) %>%
+  st_as_sf() %>%
+  group_by(CoordFileName) %>%
+  summarise(geometry = st_union(Shape)) %>%
+  ungroup() %>%
+  rename(boundary_type = CoordFileName)
+  
+## test lat
+lat_test <- lat_df %>%
+  filter(boundary_name %in% c("U.S. EEZ Boundary North", "46 16.00' N")) %>%
+  mutate(boundary_type = ifelse(boundary_name == "46 16.00' N", "southern", "northern")) %>%
+  select(boundary_type, geometry = shape) %>%
+  rbind(test_line)
+
+## crop ----------------------------------------------------------
+## get bounding box for north south
+north_bb <- lat_test %>% filter(boundary_type == "northern")
+south_bb <- lat_test %>% filter(boundary_type == "southern")
+
+bbox_ns <- st_union(north_bb, south_bb) %>% 
+  st_bbox()
+
+## crop seaward and shoreward
+seaward_crop <- lat_test %>% filter(boundary_type == "150fm_010119.csv")
+seaward_crop <- st_crop(seaward_crop, bbox_ns)
+
+## crop seaward and shoreward
+shore_crop <- lat_test %>% filter(boundary_type == "100fm_010119.csv")
+shore_crop <- st_crop(shore_crop, bbox_ns)
+
+## combine
+adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
+
+test_polyi <- st_intersection(adj_poly_lines$geometry)
+test_poly <- st_polygonize(st_union(test_polyi))
+rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
+
+
 # ## filter iso_out_sp for isobaths needed
 # iso_out_sp_filt <- iso_out_sp %>%
 #   filter(isobath %in% iso_polys$boundary_name) 
