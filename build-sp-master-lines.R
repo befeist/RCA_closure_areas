@@ -246,6 +246,10 @@ missing_isos <- setdiff(iso_polys %>% select(boundary_name) %>% unique(),
 iso_filt <- master_lines %>%
   filter(CoordFileName %in% iso_polys$boundary_name)
 
+
+
+
+
 ## test
 test_line <- iso_filt %>% 
   filter(CoordFileName %in% c("100fm_010119.csv", "150fm_010119.csv")) %>% 
@@ -284,7 +288,7 @@ adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
 
 test_polyi <- st_intersection(adj_poly_lines$geometry)
 test_poly <- st_polygonize(st_union(test_polyi))
-rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
+# rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
 
 
 # ## filter iso_out_sp for isobaths needed
