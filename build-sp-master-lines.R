@@ -123,6 +123,7 @@ iso_area_name <- iso_out_all %>%
 ## poly df
 poly_df <- janitor::clean_names(poly_df_orig) %>%
   select(-completed) %>%
+  filter(shoreward_boundary != "N/A") %>%
   mutate(SiteName = paste("TrawlRCA", year_month, land_ref, northern_boundary, southern_boundary, shoreward_boundary, seaward_boundary, sep = "_")) %>%
   pivot_longer(northern_boundary:seaward_boundary, names_to = 'boundary_dir', values_to = 'boundary_name') %>%
   mutate(boundary_dir = str_remove(boundary_dir, '_boundary'),
@@ -168,7 +169,8 @@ lat_df <- rca_spf[[37]] %>%
   select(boundary_type,
          boundary_name = Latitude_DM,
          area_name,
-         shape = Shape)
+         shape = Shape) %>%
+  st_transform(rca_crs) 
 
 # ## create df of northern/southern boundaries (Latitude_DM) and one isobath for shoreline
 # unique_lat_df <- master_lines %>%
@@ -218,7 +220,10 @@ south_eez <- read_sf(file.path(data_path, south_bound)) %>%
 
 ## bind
 lat_df <- rbind(lat_df, north_eez, south_eez) %>%
-  filter(boundary_type != "isobath")
+  filter(boundary_type != "isobath") %>%
+  group_by(boundary_type, boundary_name, area_name) %>%
+  summarize(shape = st_cast(shape, "LINESTRING")) %>%
+  ungroup()
 
 
 ## create shoreline with islands in case needed
@@ -228,7 +233,8 @@ shoreline_isl <- rca_spf[[1]] %>%
 shoreline_isl_df <- tibble(boundary_type = "isobath",
                            boundary_name = "Shoreline",
                            shape = shoreline_isl) %>%
-  st_as_sf()
+  st_as_sf() %>%
+  st_transform(rca_crs)
 
 ## isobaths
 ## ------------------------------------------------
@@ -244,9 +250,72 @@ missing_isos <- setdiff(iso_polys %>% select(boundary_name) %>% unique(),
 
 ## filter masterline for the boundaries needed
 iso_filt <- master_lines %>%
+  st_as_sf() %>%
+  st_transform(rca_crs) %>%
   filter(CoordFileName %in% iso_polys$boundary_name)
 
 
+## make function
+site_name_vec <- unique(poly_df$SiteName)
+
+make_poly_func <- function(site_name) {
+  
+  temp_id <- site_name
+  
+  temp_poly <- poly_df %>%
+    filter(SiteName == temp_id)
+  
+  temp_isos <- temp_poly %>%
+    filter(boundary_type == "isobath")
+  
+  temp_isos_p <- iso_filt %>% 
+    filter(CoordFileName %in% temp_isos$boundary_name) %>% 
+    select(CoordFileName, Shape) %>%
+    st_as_sf() %>%
+    group_by(CoordFileName) %>%
+    summarise(geometry = st_union(Shape)) %>%
+    ungroup() %>%
+    rename(boundary_name = CoordFileName)
+  
+  temp_lats <- temp_poly %>%
+    filter(boundary_type != "isobath")
+  
+  temp_lats_p <- lat_df %>%
+    filter(boundary_name %in% temp_lats$boundary_name) %>%
+    select(boundary_name, geometry = shape)
+  
+  temp_df <- rbind(temp_isos_p, temp_lats_p)
+  
+  ## crop ---------------------------------------------
+  
+  ## get bounding box for north south
+  temp_bbox_lat <- st_union(temp_lats_p) %>% 
+    st_bbox()
+  
+  ## crop seaward and shoreward
+  temp_isos_p_crop <- st_crop(temp_isos_p, temp_bbox_lat)
+  
+  ## create poly
+  temp_poly_lines <- rbind(temp_isos_p_crop, temp_lats_p)
+  
+  ## 
+  test <- temp_df %>%
+    mutate(site_name = site_name) %>%
+    group_by(site_name) %>%
+    summarise() %>%
+    st_cast("LINESTRING")
+  
+  test2 <- st_union(temp_df)
+  test3 <- st_polygonize(test2)
+  
+  temp_polyi <- st_intersection(temp_df$geometry)
+  temp_poly <- st_polygonize(st_union(temp_polyi))
+  
+  
+  
+  
+  
+}
 
 
 
@@ -275,20 +344,103 @@ south_bb <- lat_test %>% filter(boundary_type == "southern")
 bbox_ns <- st_union(north_bb, south_bb) %>% 
   st_bbox()
 
+## manually make bounding box
+bbox_ns2 <- st_bbox(c(xmin = bbox_ns$xmin %>% as.numeric(), 
+                      xmax = bbox_ns$xmax %>% as.numeric(), 
+                      ymax = bbox_ns$ymax %>% as.numeric() + 0.1, 
+                      ymin = bbox_ns$ymin %>% as.numeric() - 0.1), crs = st_crs(rca_crs))
+
+
+# ## add buffer
+# bbox_ns2 <- st_bbox(c(xmin = bbox_ns$xmin[1], xmax = bbox_ns$xmax, 
+#                      ymax = bbox_ns$ymax + 0.1, ymin = bbox_ns$ymin - 0.1), crs = st_crs(rca_crs))
+
+# bbox_ns$ymin <- bbox_ns$ymin - 0.1
+
 ## crop seaward and shoreward
 seaward_crop <- lat_test %>% filter(boundary_type == "150fm_010119.csv")
-seaward_crop <- st_crop(seaward_crop, bbox_ns)
+seaward_crop <- st_crop(seaward_crop, bbox_ns2)
 
 ## crop seaward and shoreward
 shore_crop <- lat_test %>% filter(boundary_type == "100fm_010119.csv")
-shore_crop <- st_crop(shore_crop, bbox_ns)
+shore_crop <- st_crop(shore_crop, bbox_ns2)
 
 ## combine
 adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
 
 test_polyi <- st_intersection(adj_poly_lines$geometry)
-test_poly <- st_polygonize(st_union(test_polyi))
-# rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
+test_polyi2 <- st_union(test_polyi)
+test_poly <- st_polygonize(st_union(adj_poly_lines$geometry))
+rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
+
+
+ggplotly(ggplot(adj_poly_lines) + 
+           geom_sf(aes(color = boundary_type)))
+
+
+test_cast <- adj_poly_lines %>%
+  summarise() %>%
+  st_cast("POLYGON")
+
+## try extended geo file
+## --------------------------------
+
+
+## extended geo merge lines
+extended_geo <- rca_spf2[44,2][1]
+extended_geo <- unnest(extended_geo, sp_info) %>%
+  st_as_sf()
+
+## test
+test_line_eg <- extended_geo %>% 
+  filter(CoordFileName %in% c("100fm_010119.csv", "150fm_010119.csv")) %>% 
+  select(CoordFileName, Shape) %>%
+  st_as_sf() %>%
+  group_by(CoordFileName) %>%
+  summarise(geometry = st_union(Shape)) %>%
+  ungroup() %>%
+  rename(boundary_type = CoordFileName)
+
+## 
+lat_test_eg <- lat_df %>%
+filter(boundary_name %in% c("U.S. EEZ Boundary North", "46 16.00' N")) %>%
+  mutate(boundary_type = ifelse(boundary_name == "46 16.00' N", "southern", "northern")) %>%
+  select(boundary_type, geometry = shape) %>%
+  rbind(test_line_eg)
+
+
+## crop seaward and shoreward
+seaward_crop_eg <- lat_test_eg %>% filter(boundary_type == "150fm_010119.csv")
+seaward_crop_eg <- st_crop(seaward_crop_eg, bbox_ns2)
+
+## crop seaward and shoreward
+shore_crop_eg <- lat_test_eg %>% filter(boundary_type == "100fm_010119.csv")
+shore_crop_eg <- st_crop(shore_crop_eg, bbox_ns2)
+
+## combine
+adj_poly_lines_eg <- rbind(north_bb, south_bb, seaward_crop_eg, shore_crop_eg)
+
+test_polyi_eg <- st_intersection(adj_poly_lines_eg$geometry)
+test_polyi2_eg <- st_union(test_polyi_eg)
+test_poly_eg <- st_polygonize(st_union(adj_poly_lines_eg$geometry))
+rca_polygon2 <- st_collection_extract(st_polygonize(st_union(test_polyi)))
+
+test_cast <- adj_poly_lines %>%
+  summarise() %>%
+  st_cast("POLYGON")
+
+## look at polygon
+master_poly <- rca_spf2[46,2][1]
+master_poly <- unnest(master_poly, sp_info) %>%
+  st_as_sf()
+
+ggplotly(ggplot(master_poly %>% 
+                  filter(SiteName == "TrawlRCA_202102_USEEZBoundary_4616_100fm_150fm")) + 
+           geom_sf())
+
+
+
+
 
 
 # ## filter iso_out_sp for isobaths needed
