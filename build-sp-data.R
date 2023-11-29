@@ -14,7 +14,7 @@ library(data.table)
 library(stringr)
 
 ## directories
-data_path       <- '/Volumes/GoogleDrive/My Drive/Ruttenberg et al collaboration/'
+data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
 coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/')
 
 ## files
@@ -45,8 +45,10 @@ gdb_layers      <- sf::st_layers(dsn = paste0(data_path, rca_gdb))
 ## print names
 gdb_layers$name
 
+## load layers
 rca_spf <- purrr::map(gdb_layers$name, ~st_read(dsn = paste0(data_path, rca_gdb), layer = .))
 
+## create tibble
 rca_spf2 <- tibble(layer_name = gdb_layers$name,
                    sp_info = rca_spf) 
 
