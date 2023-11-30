@@ -14,7 +14,7 @@ library(data.table)
 library(stringr)
 
 ## directories
-data_path       <- '/Volumes/GoogleDrive/My Drive/Ruttenberg et al collaboration/'
+data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
 coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/')
 
 ## files

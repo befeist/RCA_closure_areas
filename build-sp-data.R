@@ -52,7 +52,7 @@ rca_spf <- purrr::map(gdb_layers$name, ~st_read(dsn = paste0(data_path, rca_gdb)
 rca_spf2 <- tibble(layer_name = gdb_layers$name,
                    sp_info = rca_spf) 
 
-## isobath files
+## isobath files - legislation
 iso_list <- list.files(coord_path)
 
 iso_out_list <- list()
@@ -75,6 +75,7 @@ iso_out_all <- rbindlist(iso_out_list) %>%
   rename(longitude = lon_dd,
          latitude = lat_dd)
 
+## convert to points
 iso_out_sp <- st_as_sf(x = iso_out_all, 
                        coords = c("longitude", "latitude"), 
                        crs = rca_crs)
@@ -102,7 +103,7 @@ legis_df2 <- legis_df %>%
   arrange(-year) %>%
   select(year, area, cfr_citation, year_end_frn_citation_s)
 
-## poly df
+## polygon df
 poly_df <- janitor::clean_names(poly_df_orig) %>% 
   select(-completed) %>%
   mutate(SiteName = paste("TrawlRCA", year_month, land_ref, northern_boundary, southern_boundary, shoreward_boundary, seaward_boundary, sep = "_")) %>%
@@ -328,7 +329,7 @@ public_df <- adj_poly_lines %>%
 ## union
 # rca_polygon <- st_union(adj_poly_lines)
 rca_polygon <- st_cast(adj_poly_lines, "MULTILINESTRING")
-rca_polygoni <- st_intersection(adj_poly_lines$geometry)
+rca_polygoni <- st_intersection(adj_poly_lines$shape)
 
 
 rca_polygon2 <- st_polygonize(st_union(rca_polygoni))
