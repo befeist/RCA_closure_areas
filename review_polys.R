@@ -15,12 +15,15 @@ library(lubridate)
 library(cowplot)
 
 ## directories
-data_path       <- '/Volumes/GoogleDrive/My Drive/Ruttenberg et al collaboration/'
+# data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
+data_path       <- '/Users/tracey/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
 coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/')
 
 ## files
 rca_data        <- 'Historical_trawl_RCA_2002-2021_CEW_LC_01Oct2021.xlsx'
 rca_gdb         <- 'RCA_Mapping_Project_4Cal_Poly.gdb'
+north_bound     <- 'revised-sp/north-south-bounds/eez_north.shp'
+south_bound     <- 'revised-sp/north-south-bounds/eez_south.shp'
 
 ## specify inputs
 rca_crs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
@@ -43,6 +46,7 @@ rca_spf2 <- tibble(layer_name = gdb_layers$name,
 north_bound     <- 'revised-sp/north-south-bounds/eez_north.shp'
 south_bound     <- 'revised-sp/north-south-bounds/eez_south.shp'
 
+## extract latitude boundaries (EEZ_shoreline_and_Landmarks_Geo)
 lat_df <- rca_spf[[37]] %>%
   mutate(Latitude_DM = ifelse(LineType == "EEZ", "U.S. EEZ Boundary", 
                               ifelse(LineType == "shore", "Shoreline", Latitude_DM)),
@@ -74,7 +78,7 @@ south_eez <- read_sf(file.path(data_path, south_bound)) %>%
 lat_df <- rbind(lat_df, north_eez, south_eez)
 
 
-## extract polygons
+## extract polygons that NOAA created (RCA_Polygons_2002_21)
 ## --------------------------------------------
 rca_polys <- rca_spf2$sp_info[[46]] 
 
