@@ -14,7 +14,17 @@ library(data.table)
 library(stringr)
 
 ## directories
-data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
+data_path       <- here(
+  'Ruttenberg et al collaboration/'
+)
+# data_path       <- paste0(
+#   '/Users/vermilirockfish',
+#   '/Library/CloudStorage/',
+#   'GoogleDrive-cullen_molitor@ucsb.edu/',
+#   '.shortcut-targets-by-id/1-IL3o6eyWrHK2qP4eA_wBMh2fHEgR9AN/',
+#   'Ruttenberg et al collaboration/'
+# )
+# data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
 coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/')
 
 ## files

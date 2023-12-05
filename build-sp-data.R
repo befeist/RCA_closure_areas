@@ -12,9 +12,19 @@ library(openxlsx)
 library(rgdal)
 library(data.table)
 library(stringr)
+library(here)
 
 ## directories
-data_path       <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My\ Drive/Ruttenberg et al collaboration/'
+data_path       <- here(
+  'Ruttenberg et al collaboration/'
+)
+# data_path       <- paste0(
+#   '/Users/vermilirockfish',
+#   '/Library/CloudStorage/',
+#   'GoogleDrive-cullen_molitor@ucsb.edu/',
+#   '.shortcut-targets-by-id/1-IL3o6eyWrHK2qP4eA_wBMh2fHEgR9AN/',
+#   'Ruttenberg et al collaboration/'
+# )
 coord_path      <- paste0(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21/')
 
 ## files
@@ -31,13 +41,13 @@ rca_crs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
 
 ## regulatory information
 legis_df_orig   <- read.xlsx(paste0(data_path, rca_data), 
-                           sheet = 1, 
-                           startRow = 3,
-                           cols = c(1, 3:23))
+                             sheet = 1, 
+                             startRow = 3,
+                             cols = c(1, 3:23))
 
 ## information for building polygons
 poly_df_orig    <- read.xlsx(paste0(data_path, rca_data), 
-                          sheet = 4)
+                             sheet = 4)
 
 ## gdb
 gdb_layers      <- sf::st_layers(dsn = paste0(data_path, rca_gdb))
@@ -68,7 +78,7 @@ for (i in 1:length(iso_list)) {
     select(isobath, id_area:lon_dd)
   
   iso_out_list[[i]] <- iso_tmp_df
- 
+  
 }
 
 iso_out_all <- rbindlist(iso_out_list) %>%
@@ -94,7 +104,7 @@ legis_df <- janitor::clean_names(legis_df_orig) %>%
 legis_2017 <- legis_df %>%
   filter(year == '2017-18') %>%
   mutate(year = '2017')
-  
+
 ## make separate entries for 2017 and 2018  
 legis_df2 <- legis_df %>%
   mutate(year = ifelse(year == '2017-18', '2018', year)) %>%
@@ -127,8 +137,10 @@ poly_df <- janitor::clean_names(poly_df_orig) %>%
   mutate(boundary_name = gsub("[()]", "", boundary_name),
          boundary_name = str_remove(boundary_name, pattern = "0 fm ")) %>%
   select(SiteName, year_month, land_ref, ns_bounds, boundary_type, boundary_dir, boundary_name) %>%
-  mutate(boundary_name = ifelse(boundary_name == "U.S. EEZ Boundary" & boundary_dir == "northern", "U.S. EEZ Boundary North",
-                                ifelse(boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern", "U.S. EEZ Boundary South", boundary_name)))
+  mutate(boundary_name = ifelse(
+    boundary_name == "U.S. EEZ Boundary" & boundary_dir == "northern", "U.S. EEZ Boundary North",
+    ifelse(
+      boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern", "U.S. EEZ Boundary South", boundary_name)))
 
 
 ## View poly info
@@ -170,8 +182,8 @@ south_eez <- read_sf(file.path(data_path, south_bound)) %>%
   st_transform(rca_crs) %>%
   filter(OBJECTID == 1) %>%
   mutate(boundary_type = 'latitude',
-        boundary_name = 'U.S. EEZ Boundary South',
-        area_name = 'U.S. EEZ Boundary South') %>%
+         boundary_name = 'U.S. EEZ Boundary South',
+         area_name = 'U.S. EEZ Boundary South') %>%
   select(boundary_type, boundary_name, area_name, shape = geometry)
 
 ## bind
@@ -250,10 +262,10 @@ isobath_vec <- unique(iso_out_sp_filt$isobath)
 
 for(i in 1:length(unique(iso_out_sp_filt$isobath))) {
   
- tmp_iso_name <- isobath_vec[i]
- 
- tmp_iso_df <- iso_out_sp_filt %>%
-   filter(isobath == tmp_iso_name)
+  tmp_iso_name <- isobath_vec[i]
+  
+  tmp_iso_df <- iso_out_sp_filt %>%
+    filter(isobath == tmp_iso_name)
   
   temp_fig <- ggplot(tmp_iso_df) +
     geom_sf(aes(color = id_area)) +
@@ -379,13 +391,13 @@ for(i in 1:length(rca_ids)) {
   
   ## combine
   adj_poly_lines <- rbind(north_bb, south_bb, seaward_crop, shore_crop)
-
+  
   ## public version for help asking questions
   public_df <- adj_poly_lines %>%
     select(boundary_dir)
   
   ## save
-  st_write(public_df, dsn = paste0(data_path, "diagnostic/example/sp_example.shp"))
+  st_write(public_df, dsn = paste0(data_path, "diagnostic/example/sp_example.shp"), append=FALSE)
   
   ## two lines?
   test <- public_df %>%
@@ -393,8 +405,8 @@ for(i in 1:length(rca_ids)) {
   
   testp <- test %>% 
     st_polygonize()
-
-
+  
+  
   ## union
   # rca_polygon <- st_union(adj_poly_lines)
   rca_polygon <- st_cast(adj_poly_lines, "MULTILINESTRING")
