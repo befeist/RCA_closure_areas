@@ -1,0 +1,447 @@
+---
+format: html
+---
+
+## Setup
+
+```{r}
+if (!require(librarian,quietly = T)){
+  install.packages('librarian')
+}
+
+librarian::shelf(
+  here,
+  plotly,
+  tidyverse,
+  lubridate,
+  data.table,
+  openxlsx,
+  terra,
+  sf,
+  rnaturalearth, 
+  rnaturalearthdata,
+  foreach,
+  doParallel,
+  iterators,
+  quiet = T
+)
+```
+
+## File Paths
+
+```{r}
+## directories
+data_path <- here::here('Ruttenberg et al collaboration')
+coord_path <- here::here(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21')
+
+## files
+rca_data_fn  <- 'Historical_trawl_RCA_2002-2021_CEW_LC_01Oct2021.xlsx'
+cal_poly_fn  <- 'RCA_Mapping_Project_4Cal_Poly.gdb'
+eez_north_fn <- 'revised-sp/north-south-bounds/eez_north.shp'
+eez_south_fn <- 'revised-sp/north-south-bounds/eez_south.shp'
+
+## specify inputs
+rca_crs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+
+```
+
+## Legislative Boundary Data
+
+```{r}
+# ## regulatory metadata
+# legis_df_orig <- here::here(data_path, rca_data_fn) |> 
+#   openxlsx::read.xlsx(
+#     sheet = 1,
+#     startRow = 3,
+#     cols = c(1, 3:23)
+#   )
+
+## Regulatory boundary points
+rca_legis_points_df <- coord_path |> 
+  list.files(full.names = TRUE) |> 
+  readr::read_csv(
+    locale = locale(encoding = "ISO-8859-1"), 
+    id = "boundary_name", 
+    show_col_types=FALSE)  |> 
+  dplyr::mutate(
+    boundary_name = basename(boundary_name),
+    boundary_type = "isobath") |> 
+  dplyr::rename(lat = lat_dd, lon = lon_dd) |> 
+  dplyr::filter(area_name != "150-fm (274-m) Contour - Seamounts - Lasuen Knoll")
+
+## Create line strings for each isobath and area_name
+rca_lines_sf <- rca_legis_points_df |> 
+  sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)  |>  
+  dplyr::group_by(boundary_type, boundary_name, area_name) |>
+  dplyr::arrange(id_area) |> 
+  dplyr::summarize(geometry = st_combine(geometry)) |> 
+  sf::st_cast("LINESTRING") 
+
+rca_lines_vec <- rca_lines_sf |> 
+  terra::vect()
+
+max_extent <- terra::ext(rca_lines_vec)
+xmin <- terra::xmin(max_extent)
+xmax <- terra::xmax(max_extent)
+ymin <- terra::ymin(max_extent)
+ymax <- terra::ymax(max_extent)
+
+
+## Load north america shapefile for plotting
+north_america <- ne_countries(scale = "medium", returnclass = "sf") |> 
+  dplyr::filter(admin %in% c("United States of America", "Canada", "Mexico"))
+```
+
+## Plot Legislative Boundaries (lines built from points)
+
+```{r fig.width=8, fig.height=15}
+
+
+for (i in unique(rca_lines_vec$boundary_name)) {
+  
+  fn <- paste0(stringr::str_remove(i, pattern = ".csv"), ".jpg")
+  fp <- here::here("line_plots", fn)
+  
+  if (file.exists(fp)) next
+  
+  line_vec <- rca_lines_vec |> 
+    dplyr::filter(boundary_name == i)
+  
+  point_sf <- rca_legis_points_df |> 
+    dplyr::filter(boundary_name == i) 
+  
+  p1 <- ggplot() +
+    geom_sf(data = north_america, fill = "lightgrey", color = "white") +
+    geom_point(data = point_sf, aes(x = lon, y = lat), size = .5) + 
+    tidyterra::geom_spatvector(data = line_vec, aes(color = area_name)) +
+    xlim(xmin, xmax) +
+    ylim(ymin, ymax) +
+    labs(color = NULL) +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    guides(color = guide_legend(ncol = 1, byrow = TRUE))
+  
+  ggsave(filename = fp, plot = p1, device = "jpeg", width = 8, height = 15)
+}
+
+```
+
+## Shoreline
+
+```{r fig.height=15, fig.width=8}
+coastline_sf <- here::here("tl_2019_us_coastline", "tl_2019_us_coastline.shp") |> 
+  sf::st_read(quiet = TRUE) |> 
+  sf::st_transform(4326) |> 
+  dplyr::filter(NAME == "Pacific") |>
+  sf::st_crop(xmin = xmin, xmax = xmax, ymin = ymin-5, ymax = ymax+1) 
+
+coastline_merge_sf <- st_sf(
+  list(boundary_type = "isobath",
+       boundary_name = "Shoreline",
+       area_name = "Shoreline"),
+  geometry = st_union(coastline_sf$geometry))
+ 
+# ggplot() +
+#   geom_sf(data = coastline_merge_sf)
+```
+
+## EEZ Boundaries
+
+```{r fig.height=15, fig.width=8}
+## read in northern and southern us boundaries
+north_eez <- here::here(data_path, eez_north_fn) |> 
+  sf::read_sf() |>
+  dplyr::mutate(
+    boundary_type = 'latitude',
+    boundary_name = 'U.S. EEZ Boundary North',
+    area_name = 'U.S. EEZ Boundary North') 
+
+south_eez <- here::here(data_path, eez_south_fn) |> 
+  sf::read_sf() |>
+  dplyr::mutate(
+    boundary_type = 'latitude',
+    boundary_name = 'U.S. EEZ Boundary South',
+    area_name = 'U.S. EEZ Boundary South') 
+
+eez_sf <- rbind(north_eez, south_eez) |> 
+  sf::st_transform(rca_crs) |>
+  dplyr::filter(OBJECTID == 1)|>
+  dplyr::select(boundary_type, boundary_name, area_name, geometry)
+
+ggplot()+
+  geom_sf(data = eez_sf, fill = NA, color = "black") + 
+  geom_sf(data = coastline_merge_sf) +
+  xlim(xmin-5, xmax) +
+  ylim(ymin-2, ymax) +
+  theme_bw()
+
+# eez_govt <- here::here(
+#   "USMaritimeLimitsAndBoundariesSHP",
+#   "USMaritimeLimitsNBoundaries.shp") |>
+#   sf::read_sf() |>
+#   dplyr::filter(REGION == "Pacific Coast",
+#                 (EEZ == 1) |
+#                   (F_EEZ == 1)
+#                 )
+
+# eez_single <- st_sf(
+#   list(boundary_type = "eez",
+#        boundary_name = "U.S. EEZ Boundary",
+#        area_name = "U.S. EEZ Boundary"),
+#   geometry = st_union(eez_govt$geometry))
+```
+
+## Polygon Metadata
+
+```{r}
+## information for building polygons
+polygon_df_orig <- here::here(data_path, rca_data_fn) |> 
+  openxlsx::read.xlsx(sheet = 4) |> 
+  janitor::clean_names() 
+
+## Create clean data frame of polygon metadata
+polygon_df <- polygon_df_orig |> 
+  dplyr::select(-completed) |>
+  dplyr::filter(shoreward_boundary != "N/A") |>
+  dplyr::mutate(
+    SiteName = paste(## Create unique site name for id
+      "TrawlRCA", year_month, land_ref, northern_boundary,
+      southern_boundary, shoreward_boundary, seaward_boundary,
+      sep = "_")) |>
+  tidyr::pivot_longer(
+    northern_boundary:seaward_boundary,
+    names_to = 'boundary_dir', 
+    values_to = 'boundary_name') |>
+  dplyr::mutate(
+    boundary_dir = stringr::str_remove(boundary_dir, '_boundary'),
+    boundary_name = dplyr::case_when(
+      boundary_name == "U.S. EEZ boundary" ~ "U.S. EEZ Boundary",
+      boundary_name == "45 46.00'N" ~ "45 46.00' N",
+      boundary_name == '0 fm (100fm_010119.csv)' ~ '100fm_010119.csv',
+      boundary_name == "0 fm (Shoreline)" ~ "Shoreline",
+      TRUE ~ stringr::str_remove(gsub("[()]", "", boundary_name), pattern = "0 fm "))) |>
+  tidyr::pivot_wider(
+    names_from = boundary_dir, 
+    values_from = boundary_name) |>
+  dplyr::mutate(## Update unique site name for id
+    SiteName = paste("TrawlRCA", year_month, land_ref, northern, 
+                     southern, shoreward, seaward, sep = "_"),
+    ns_bounds = paste(northern, southern, sep = "_")) |>
+  tidyr::pivot_longer(
+    northern:seaward, 
+    names_to = 'boundary_dir', 
+    values_to = 'boundary_name') |>
+  dplyr::mutate(
+    boundary_type = dplyr::case_when( ## add column for joining later
+      boundary_dir %in% c('northern', 'southern') ~ 'latitude',
+      TRUE ~ 'isobath'),
+    boundary_name = dplyr::case_when(
+      boundary_name == "U.S. EEZ Boundary" & boundary_dir == "northern" ~ 
+        "U.S. EEZ Boundary North",
+      boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern" ~ 
+        "U.S. EEZ Boundary South",
+      TRUE ~ boundary_name)) |>
+  dplyr::select(SiteName, year_month, land_ref, ns_bounds, 
+                boundary_type, boundary_dir, boundary_name)
+
+## View poly info
+# rca_cases <- poly_df_orig |> 
+#   tidyr::separate(col = year_month, 
+#            into = c("year", "month"), 
+#            sep = "-", 
+#            convert = TRUE,
+#            remove = FALSE) |> 
+#   dplyr::filter(year >= 2010 & year <= 2017)
+
+north_south_lats <- polygon_df |> 
+  dplyr::filter(
+    boundary_type == 'latitude',
+    !boundary_name %in% c(
+      'U.S. EEZ Boundary North', 
+      'U.S. EEZ Boundary South')) |> 
+  dplyr::distinct(boundary_name) |> 
+  dplyr::arrange() |> 
+  dplyr::pull(boundary_name)
+```
+
+## Latitude Lines (North and South Boundaries)
+
+```{r}
+# Function to convert latitude string to decimal degrees
+convert_to_decimal <- function(lat_str) {
+  parts <- strsplit(lat_str, " ")[[1]]
+  degree <- as.numeric(sub("°", "", parts[1]))
+  minutes <- as.numeric(sub("'", "", parts[2]))
+  direction <- parts[3]
+  
+  decimal_deg <- degree + minutes / 60
+  if (direction == "S") {
+    decimal_deg <- -decimal_deg
+  }
+  return(decimal_deg)
+}
+
+# Function to create an sf data frame of lines
+create_sf_lines <- function(
+    north_south_lats, 
+    xmin, 
+    xmax, 
+    ymin,
+    ymax
+) {
+  # Convert latitudes to decimal degrees
+  decimal_lats <- sapply(north_south_lats, convert_to_decimal)
+  
+  make_lat_line <- function(lat) {
+    st_linestring(
+      matrix(c(xmin - 5, lat, xmax, lat),
+             ncol = 2, byrow = TRUE))
+  }
+  # Create lines within the specified extent
+  lines_list <- lapply(decimal_lats, make_lat_line)
+  
+  # Create an sf data frame
+  sf_lines <- st_sf(
+    boundary_type = "latitude", 
+    boundary_name = north_south_lats, 
+    area_name = north_south_lats,
+    geometry = st_sfc(lines_list)
+  )
+  
+  # Set CRS to EPSG:4326
+  sf_lines <- st_set_crs(sf_lines, 4326)
+  
+  return(sf_lines)
+}
+
+lat_sf <- create_sf_lines(
+  north_south_lats, xmin, xmax, ymin, ymax
+)
+
+n_s_boundaries_sf <- rbind(eez_sf, lat_sf)
+```
+
+## Plot Latitude and EEZ Boundaries
+
+```{r fig.width=7, fig.height=8}
+ggplot() +
+  geom_sf(data = north_america) +
+  geom_sf(data = n_s_boundaries_sf, aes(color = boundary_name)) +
+  scale_colour_viridis_d() +
+  xlim(xmin - 5, xmax) +
+  ylim(ymin-2, ymax) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  theme_minimal() 
+```
+
+## Create Unified RCA Line Boundary Data
+
+```{r}
+lines_sf <- rbind(coastline_merge_sf, n_s_boundaries_sf, rca_lines_sf)
+
+# Initialize an empty sf data frame with the correct structure
+all_sites_sf <- st_sf(
+  SiteName = character(), 
+  geometry = st_sfc(crs = st_crs(4326))
+)
+
+# Loop over each unique site
+for (site in unique(polygon_df$SiteName)) {
+  
+  fn <- stringr::str_remove(site, pattern = "TrawlRCA_")
+  fn <- stringr::str_remove_all(fn, pattern = ".csv")
+
+  site_tmp <- stringr::str_split(fn, " ")[[1]]
+  
+  title <- paste(
+    site_tmp[1], site_tmp[2], site_tmp[3], site_tmp[4], "\n", 
+    site_tmp[5],
+    sep = " "
+  )
+  
+  fn <- paste0(fn, ".jpg")
+  fp <- here::here("polygon_plots", fn)
+  
+  if (file.exists(fp)) next
+  
+  # Create a polygon for the current site
+  site_poly_df <- polygon_df |>
+    dplyr::filter(SiteName == site) |>
+    dplyr::left_join(lines_sf, by = join_by(boundary_type, boundary_name)) |>
+    sf::st_as_sf() |>
+    sf::st_union() |>
+    sf::st_polygonize()
+  
+  # Create an sf object for the current site
+  polygon_sf <- sf::st_sf(
+    SiteName = site,
+    geometry = site_poly_df
+  )
+
+  # Append the current site's sf object to the all_sites_sf data frame
+  all_sites_sf <- rbind(all_sites_sf, polygon_sf)
+
+  p1 <- ggplot() +
+    geom_sf(data = site_poly_df, fill = "red") +
+    geom_sf(data = eez_sf, fill = NA, color = "black") + 
+    geom_sf(data = coastline_merge_sf) +
+    xlim(xmin-5, xmax) +
+    ylim(ymin-2, ymax) +
+    labs(title = title) +
+    theme_bw()
+  
+  ggsave(filename = fp, plot = p1, device = "jpeg", width = 8, height = 15)
+}
+
+sf::write_sf(all_sites_sf, here::here(data_path, "all_sites_sf.gpkg"))
+
+
+```
+
+```{r fig.height=15, fig.width=8}
+
+site_tmp <- stringr::str_split(site, " ")[[1]]
+title <- paste(
+  site_tmp[1], site_tmp[2], site_tmp[3], site_tmp[4], "\n", 
+  site_tmp[5],
+  sep = " "
+)
+p1 <- ggplot() +
+  geom_sf(data = site_poly_df, fill = "red") +
+  geom_sf(data = eez_sf, fill = NA, color = "black") + 
+  geom_sf(data = coastline_merge_sf) +
+  xlim(xmin-5, xmax) +
+  ylim(ymin-2, ymax) +
+  labs(title = title) +
+  theme_bw()
+
+```
+
+
+## NOAA RCA Polygons
+
+```{r}
+# ## gdb built by NOAA intern
+# ## this is what Cal Poly is currently using for RCA boundaries 
+# cal_poly_gdb_layers  <- sf::st_layers(
+#   dsn = here::here(data_path, cal_poly_fn)
+# )
+# 
+# ## gdb layer names
+# cal_poly_gdb_layers_names <- cal_poly_gdb_layers$name
+# 
+# ## print names
+# print(cal_poly_gdb_layers_names)
+# 
+# ca_poly_rca_sf_list <- purrr::map(
+#   cal_poly_gdb_layers_names,
+#   ~sf::st_read(dsn = here::here(data_path, cal_poly_fn), layer = ., quiet =TRUE),
+#   .progress=TRUE
+# )
+# 
+# ca_poly_rca_df_list <- tibble::tibble(
+#   layer_name = cal_poly_gdb_layers_names,
+#   sp_info = ca_poly_rca_sf_list
+# )
+
+```
