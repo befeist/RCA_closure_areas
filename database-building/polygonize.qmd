@@ -65,14 +65,21 @@ rca_legis_points_df <- coord_path |>
     show_col_types=FALSE)  |> 
   dplyr::mutate(
     boundary_name = basename(boundary_name),
-    boundary_type = "isobath") |> 
+    boundary_type = "isobath", 
+    land_ref = case_when(
+      str_detect(area_name, "Coastwide") ~ "mainland",
+      str_detect(area_name, "Washington") ~ "mainland",
+      # str_detect(area_name, "Cordell") ~ "mainland",
+      str_detect(area_name, "DBCA") ~ "mainland",
+      TRUE ~ "islands"
+    )) |> 
   dplyr::rename(lat = lat_dd, lon = lon_dd) |> 
-  dplyr::filter(area_name != "150-fm (274-m) Contour - Seamounts - Lasuen Knoll")
+  dplyr::filter(area_name != "150-fm (274-m) Contour - Seamounts - Lasuen Knoll") 
 
 ## Create line strings for each isobath and area_name
 rca_lines_sf <- rca_legis_points_df |> 
   sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)  |>  
-  dplyr::group_by(boundary_type, boundary_name, area_name) |>
+  dplyr::group_by(boundary_type, boundary_name, area_name, land_ref) |>
   dplyr::arrange(id_area) |> 
   dplyr::summarize(geometry = st_combine(geometry)) |> 
   sf::st_cast("LINESTRING") 
@@ -95,8 +102,6 @@ north_america <- ne_countries(scale = "medium", returnclass = "sf") |>
 ## Plot Legislative Boundaries (lines built from points)
 
 ```{r fig.width=8, fig.height=15}
-
-
 for (i in unique(rca_lines_vec$boundary_name)) {
   
   fn <- paste0(stringr::str_remove(i, pattern = ".csv"), ".jpg")
@@ -129,66 +134,153 @@ for (i in unique(rca_lines_vec$boundary_name)) {
 ## Shoreline
 
 ```{r fig.height=15, fig.width=8}
-coastline_sf <- here::here("tl_2019_us_coastline", "tl_2019_us_coastline.shp") |> 
+coastline_3_nm_sf <- here::here("PC_FEDSTATE", "FEDSTATE.shp") |> 
   sf::st_read(quiet = TRUE) |> 
   sf::st_transform(4326) |> 
-  dplyr::filter(NAME == "Pacific") |>
-  sf::st_crop(xmin = xmin, xmax = xmax, ymin = ymin-5, ymax = ymax+1) 
+  sf::st_cast("LINESTRING")
+  dplyr::group_by(BDRY_PT_PR) |> 
+  dplyr::summarise(geometry = sf::st_union(geometry)) 
 
-coastline_merge_sf <- st_sf(
+coastline_3_nm_merge_sf <- sf::st_sf(
   list(boundary_type = "isobath",
        boundary_name = "Shoreline",
-       area_name = "Shoreline"),
-  geometry = st_union(coastline_sf$geometry))
- 
-# ggplot() +
-#   geom_sf(data = coastline_merge_sf)
+       area_name = "Shoreline",
+       land_ref = "mainland"),
+  geometry = sf::st_union(coastline_3_nm_sf$geometry)) |> 
+  sf::st_cast("LINESTRING") |> 
+  dplyr::mutate(idx = 1:10,
+                idx = as.character(idx)) |> 
+  dplyr::filter(!idx %in% c("2", "3", "4", "5","6", "7", "8", "10")) |> 
+  dplyr::group_by(boundary_type, boundary_name, area_name, land_ref) |>
+  dplyr::summarise(geometry = sf::st_union(geometry)) 
+
+# coastline_sf <- here::here("tl_2019_us_coastline", "tl_2019_us_coastline.shp") |>
+#   sf::st_read(quiet = TRUE) |>
+#   sf::st_transform(4326) |>
+#   dplyr::filter(NAME == "Pacific") |>
+#   sf::st_crop(xmin = xmin, xmax = xmax, ymin = ymin-5, ymax = ymax+1)
+# 
+# coastline_merge_sf <- st_sf(
+#   list(boundary_type = "isobath",
+#        boundary_name = "Shoreline",
+#        area_name = "Shoreline"),
+#   geometry = st_union(coastline_sf$geometry))
+
+ggplot() +
+  # geom_sf(data = coastline_3_nm_merge_sf)  +
+  geom_sf(data = coastline_3_nm_merge_sf)  
 ```
 
 ## EEZ Boundaries
 
 ```{r fig.height=15, fig.width=8}
-## read in northern and southern us boundaries
-north_eez <- here::here(data_path, eez_north_fn) |> 
-  sf::read_sf() |>
-  dplyr::mutate(
-    boundary_type = 'latitude',
-    boundary_name = 'U.S. EEZ Boundary North',
-    area_name = 'U.S. EEZ Boundary North') 
-
-south_eez <- here::here(data_path, eez_south_fn) |> 
-  sf::read_sf() |>
-  dplyr::mutate(
-    boundary_type = 'latitude',
-    boundary_name = 'U.S. EEZ Boundary South',
-    area_name = 'U.S. EEZ Boundary South') 
-
-eez_sf <- rbind(north_eez, south_eez) |> 
-  sf::st_transform(rca_crs) |>
-  dplyr::filter(OBJECTID == 1)|>
-  dplyr::select(boundary_type, boundary_name, area_name, geometry)
-
-ggplot()+
-  geom_sf(data = eez_sf, fill = NA, color = "black") + 
-  geom_sf(data = coastline_merge_sf) +
-  xlim(xmin-5, xmax) +
-  ylim(ymin-2, ymax) +
-  theme_bw()
-
-# eez_govt <- here::here(
-#   "USMaritimeLimitsAndBoundariesSHP",
-#   "USMaritimeLimitsNBoundaries.shp") |>
+# ## read in northern and southern us boundaries
+# north_eez <- here::here(data_path, eez_north_fn) |> 
 #   sf::read_sf() |>
-#   dplyr::filter(REGION == "Pacific Coast",
-#                 (EEZ == 1) |
-#                   (F_EEZ == 1)
-#                 )
+#   dplyr::mutate(
+#     boundary_type = 'latitude',
+#     boundary_name = 'U.S. EEZ Boundary North',
+#     area_name = 'U.S. EEZ Boundary North') 
+# 
+# south_eez <- here::here(data_path, eez_south_fn) |> 
+#   sf::read_sf() |>
+#   dplyr::mutate(
+#     boundary_type = 'latitude',
+#     boundary_name = 'U.S. EEZ Boundary South',
+#     area_name = 'U.S. EEZ Boundary South') 
+# 
+# eez_sf <- rbind(north_eez, south_eez) |> 
+#   sf::st_transform(rca_crs) |>
+#   dplyr::filter(OBJECTID == 1)|>
+#   dplyr::select(boundary_type, boundary_name, area_name, geometry) |> 
+#   dplyr::mutate(land_ref = "mainland")
 
-# eez_single <- st_sf(
+eez_govt <- here::here(
+  "USMaritimeLimitsAndBoundariesSHP",
+  "USMaritimeLimitsNBoundaries.shp") |>
+  sf::read_sf() |>
+  dplyr::filter(REGION == "Pacific Coast",
+                (EEZ == 1) | (F_EEZ == 1)) |> 
+  dplyr::mutate(
+    boundary_type = 'eez',
+    boundary_name = 'U.S. EEZ Boundary',
+    area_name = 'U.S. EEZ Boundary',
+    land_ref = "mainland") |> 
+  dplyr::group_by(boundary_type, boundary_name, area_name, land_ref) |>
+  dplyr::summarise(geometry = sf::st_union(geometry))
+
+# eez_single <- sf::st_sf(
 #   list(boundary_type = "eez",
 #        boundary_name = "U.S. EEZ Boundary",
-#        area_name = "U.S. EEZ Boundary"),
-#   geometry = st_union(eez_govt$geometry))
+#        area_name = "U.S. EEZ Boundary",
+#        land_ref = "mainland"),
+#   geometry = sf::st_union(eez_govt$geometry))
+
+
+
+test <- sf::st_nearest_points(eez_govt, coastline_3_nm_merge_sf) 
+
+connect_endpoints <- function(geom1, geom2) {
+  # Extract the first and last points of each geometry
+  first_point_geom1 <- st_geometry(st_cast(geom1, "POINT")[1])
+  last_point_geom1 <- st_geometry(st_cast(geom1, "POINT")[length(st_cast(geom1, "POINT"))])
+
+  first_point_geom2 <- st_geometry(st_cast(geom2, "POINT")[1])
+  last_point_geom2 <- st_geometry(st_cast(geom2, "POINT")[length(st_cast(geom2, "POINT"))])
+
+  # Create LINESTRING geometries connecting these points
+  line1 <- st_linestring(rbind(st_coordinates(first_point_geom1), st_coordinates(first_point_geom2)))
+  line2 <- st_linestring(rbind(st_coordinates(last_point_geom1), st_coordinates(last_point_geom2)))
+
+  # Combine the original geometries with the new connecting lines
+  combined_geom <- do.call(st_union, list(geom1, geom2, st_sfc(line1, line2)))
+
+  return(combined_geom)
+}
+
+
+# Example usage:
+# Assuming geom1 and geom2 are your MULTILINESTRING geometries
+combined_geom <- connect_endpoints(eez_govt, coastline_3_nm_merge_sf)
+
+
+eez_point <- eez_govt |> 
+  sf::st_cast("POINT") 
+
+coast_point <- coastline_3_nm_merge_sf |> 
+  sf::st_cast("POINT")
+
+test <- eez_govt |> # rbind(eez_govt, coastline_3_nm_merge_sf) |> 
+  dplyr::summarise(geometry = sf::st_union(geometry)) |>
+  sf::st_cast("POLYGON")
+
+
+lines_sf <- st_sfc(lines, crs = st_crs(points_sf))
+# |> 
+#   summarise(geometry = sf::st_combine(geometry)) |>
+#   # sf::st_as_sf() |>
+#   sf::st_cast("MULTILINESTRING") |>
+#   # group_by(land_ref) |>
+#   # sf::st_buffer() |> 
+#   # sf::st_make_valid() |>
+#   # sf::st_union() |>
+#   sf::st_polygonize()
+
+  # Create an sf object for the current site
+polygon_sf <- sf::st_sf(
+  SiteName = "site",
+  geometry = test
+)
+  
+
+ggplot() +
+  geom_sf(data = test, fill = NA, color = "red") +
+  geom_sf(data = eez_single, fill = NA, color = "black") +
+  # geom_sf(data = coastline_merge_sf) +
+  # geom_sf(data = coastline_3_nm_merge_sf)  +
+  # xlim(xmin-5, xmax) +
+  # ylim(ymin-2, ymax) +
+  theme_bw()
 ```
 
 ## Polygon Metadata
@@ -260,7 +352,7 @@ north_south_lats <- polygon_df |>
       'U.S. EEZ Boundary North', 
       'U.S. EEZ Boundary South')) |> 
   dplyr::distinct(boundary_name) |> 
-  dplyr::arrange() |> 
+  dplyr::arrange(boundary_name) |> 
   dplyr::pull(boundary_name)
 ```
 
@@ -316,7 +408,8 @@ create_sf_lines <- function(
 
 lat_sf <- create_sf_lines(
   north_south_lats, xmin, xmax, ymin, ymax
-)
+) |> 
+  dplyr::mutate(land_ref = "mainland")
 
 n_s_boundaries_sf <- rbind(eez_sf, lat_sf)
 ```
@@ -326,6 +419,7 @@ n_s_boundaries_sf <- rbind(eez_sf, lat_sf)
 ```{r fig.width=7, fig.height=8}
 ggplot() +
   geom_sf(data = north_america) +
+  geom_sf(data = coastline_3_nm_merge_sf, color = "darkorchid") +
   geom_sf(data = n_s_boundaries_sf, aes(color = boundary_name)) +
   scale_colour_viridis_d() +
   xlim(xmin - 5, xmax) +
@@ -337,8 +431,86 @@ ggplot() +
 ## Create Unified RCA Line Boundary Data
 
 ```{r}
-lines_sf <- rbind(coastline_merge_sf, n_s_boundaries_sf, rca_lines_sf)
+lines_sf <- rbind(coastline_3_nm_merge_sf, n_s_boundaries_sf, rca_lines_sf)
 
+```
+
+## Create Single RCA Polygon (Test)
+
+
+```{r}
+site <- unique(polygon_df$SiteName)[1]
+
+fn <- site |> 
+  stringr::str_remove(pattern = "TrawlRCA_") |> 
+  stringr::str_remove_all(pattern = ".csv")
+
+site_tmp <- stringr::str_split(fn, " ")[[1]]
+
+title <- paste(
+  site_tmp[1], site_tmp[2], site_tmp[3], site_tmp[4], "\n", 
+  site_tmp[5],
+  sep = " "
+)
+
+fn <- paste0(fn, ".jpg")
+fp <- here::here("polygon_plots", fn)
+
+# if (file.exists(fp)) next
+
+site_poly_sf <- polygon_df |>
+  dplyr::filter(SiteName == site) |>
+  dplyr::left_join(
+    lines_sf, by = join_by(land_ref, boundary_type, boundary_name)) |>
+  sf::st_as_sf(crs = 4326)
+
+north_bound <- site_poly_sf |>
+  dplyr::filter(boundary_dir == "northern") |> 
+  sf::st_bbox()
+
+south_bound <- site_poly_sf |>
+  dplyr::filter(boundary_dir == "southern") |> 
+  sf::st_bbox()
+
+seaward_bound <- site_poly_sf |>
+  dplyr::filter(boundary_dir == "seaward") |> 
+  sf::st_bbox()
+
+shoreward_bound <- site_poly_sf |>
+  dplyr::filter(boundary_dir == "shoreward") |> 
+  sf::st_bbox()
+
+ymin <- south_bound["xmin"][[1]]
+xmin <- north_bound["xmin"][[1]]
+
+# Create an sf object for the current site
+polygon_sf <- sf::st_sf(
+  SiteName = site,
+  geometry = site_poly_crop_sf
+)
+
+#   sf::st_union() |>
+#   sf::st_polygonize()
+
+# Append the current site's sf object to the all_sites_sf data frame
+all_sites_sf <- rbind(all_sites_sf, polygon_sf)
+
+p1 <- ggplot() +
+  geom_sf(data = site_poly_sf, fill = "red") +
+  geom_sf(data = eez_sf, fill = NA, color = "black") + 
+  geom_sf(data = coastline_3_nm_merge_sf) +
+  xlim(xmin-5, xmax) +
+  ylim(ymin-2, ymax) +
+  labs(title = title) +
+  theme_bw()
+
+ggsave(filename = fp, plot = p1, device = "jpeg", width = 8, height = 15)
+
+```
+
+## Create RCA Polygons and Plots
+
+```{r}
 # Initialize an empty sf data frame with the correct structure
 all_sites_sf <- st_sf(
   SiteName = character(), 
@@ -348,9 +520,10 @@ all_sites_sf <- st_sf(
 # Loop over each unique site
 for (site in unique(polygon_df$SiteName)) {
   
-  fn <- stringr::str_remove(site, pattern = "TrawlRCA_")
-  fn <- stringr::str_remove_all(fn, pattern = ".csv")
-
+  fn <- site |> 
+    stringr::str_remove(pattern = "TrawlRCA_") |> 
+    stringr::str_remove_all(pattern = ".csv")
+  
   site_tmp <- stringr::str_split(fn, " ")[[1]]
   
   title <- paste(
@@ -377,10 +550,10 @@ for (site in unique(polygon_df$SiteName)) {
     SiteName = site,
     geometry = site_poly_df
   )
-
+  
   # Append the current site's sf object to the all_sites_sf data frame
   all_sites_sf <- rbind(all_sites_sf, polygon_sf)
-
+  
   p1 <- ggplot() +
     geom_sf(data = site_poly_df, fill = "red") +
     geom_sf(data = eez_sf, fill = NA, color = "black") + 
