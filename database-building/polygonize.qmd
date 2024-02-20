@@ -18,7 +18,7 @@ librarian::shelf(
   openxlsx,
   terra,
   sf,
-  rgeos,
+  # rgeos,
   rnaturalearth, 
   rnaturalearthdata,
   foreach,
@@ -70,6 +70,7 @@ rca_legis_points_df <- coord_path |>
     id = "boundary_name", 
     show_col_types=FALSE)  |> 
   dplyr::mutate(
+    area_name = stringr::str_replace_all(area_name, "-C", "- C"),
     boundary_name = basename(boundary_name),
     boundary_type = "isobath", 
     land_ref = case_when(
@@ -77,6 +78,7 @@ rca_legis_points_df <- coord_path |>
       str_detect(area_name, "Washington") ~ "mainland",
       # str_detect(area_name, "Cordell") ~ "mainland",
       str_detect(area_name, "DBCA") ~ "mainland",
+      str_detect(area_name, "Petrale") ~ "mainland",
       TRUE ~ "islands"
     )) |> 
   dplyr::rename(lat = lat_dd, lon = lon_dd) |> 
@@ -89,6 +91,11 @@ rca_lines_sf <- rca_legis_points_df |>
   dplyr::arrange(id_area) |> 
   dplyr::summarize(geometry = st_combine(geometry)) |> 
   sf::st_cast("LINESTRING") 
+
+rca_lines_sf |> 
+  tibble::as_tibble() |>
+  dplyr::select(boundary_name, area_name, land_ref) |> 
+  readr::write_csv(here::here(data_path, "rca_lines_names.csv"))
 
 rca_lines_vec <- rca_lines_sf |> 
   terra::vect()
@@ -131,14 +138,14 @@ unique(ca_poly_rca_vect_df$layer_name)
 ```
 
 ```{r}
-shoreline_eez <- ca_poly_rca_vect_df |> 
-  dplyr::filter(layer_name == "Master_feature_source") |> 
-  dplyr::pull(vect_info)
-
-df <- shoreline_eez[[1]] |> 
-  sf::st_as_sf() 
-
-unique(df$CoordFileName)
+# shoreline_eez <- ca_poly_rca_vect_df |> 
+#   dplyr::filter(layer_name == "RCA_Polygons_2002_21") |> 
+#   dplyr::pull(vect_info)
+# 
+# df <- shoreline_eez[[1]] |> 
+#   sf::st_as_sf() 
+# 
+# unique(df$CoordFileName)
 ```
 
 
@@ -208,6 +215,8 @@ for (i in unique(rca_lines_vec$boundary_name)) {
     tidyterra::geom_spatvector(data = shoreline_eez[[1]], color = "black") +
     geom_point(data = point_sf, aes(x = lon, y = lat), size = .5) + 
     tidyterra::geom_spatvector(data = line_vec, aes(color = area_name)) +
+    coord_sf()
+    scale_y_continuous(breaks = )
     xlim(xmin, xmax) +
     ylim(ymin, ymax) +
     labs(color = NULL) +
@@ -243,10 +252,10 @@ eez_sf <- rbind(north_eez, south_eez) |>
   dplyr::select(boundary_type, boundary_name, area_name, geometry) |> 
   dplyr::mutate(land_ref = "mainland")
 
-ggplot() +
-  geom_sf(data = shoreline, fill = NA, color = "red") +
-  geom_sf(data = eez_sf, fill = NA, color = "black") +
-  theme_bw()
+# ggplot() +
+#   geom_sf(data = shoreline, fill = NA, color = "red") +
+#   geom_sf(data = eez_sf, fill = NA, color = "black") +
+#   theme_bw()
 
 ```
 
@@ -312,24 +321,31 @@ north_south_lats <- polygon_df |>
   dplyr::distinct(boundary_name) |> 
   dplyr::arrange(boundary_name) |> 
   dplyr::pull(boundary_name)
+
+
 ```
 
 ## Latitude Lines (North and South Boundaries)
 
 ```{r}
-# Function to convert latitude string to decimal degrees
 convert_to_decimal <- function(lat_str) {
-  parts <- strsplit(lat_str, " ")[[1]]
-  degree <- as.numeric(sub("°", "", parts[1]))
-  minutes <- as.numeric(sub("'", "", parts[2]))
+  # Split the string by space and apostrophe to extract degrees, minutes, and direction
+  parts <- unlist(strsplit(lat_str, " |'"))
+  degree <- as.numeric(parts[1])
+  minutes <- as.numeric(parts[2])
   direction <- parts[3]
   
-  decimal_deg <- degree + minutes / 60
+  # Convert to decimal degrees
+  decimal_deg <- degree + (minutes / 60)
+  
+  # Adjust sign for southern latitudes
   if (direction == "S") {
     decimal_deg <- -decimal_deg
   }
+  
   return(decimal_deg)
-} 
+}
+
 
 # Function to create an sf data frame of lines
 create_sf_lines <- function(
@@ -373,15 +389,15 @@ n_s_boundaries_sf <- rbind(eez_sf, lat_sf)
 ## Plot Latitude and EEZ Boundaries
 
 ```{r fig.width=7, fig.height=8}
-ggplot() +
-  geom_sf(data = north_america) +
-  geom_sf(data = shoreline, color = "darkorchid") +
-  geom_sf(data = n_s_boundaries_sf, aes(color = boundary_name)) +
-  scale_colour_viridis_d() +
-  xlim(-130 , -117) +
-  ylim(ymin-2, ymax) +
-  guides(color = guide_legend(reverse = TRUE)) +
-  theme_minimal() 
+# ggplot() +
+#   geom_sf(data = north_america) +
+#   geom_sf(data = shoreline, color = "darkorchid") +
+#   geom_sf(data = n_s_boundaries_sf, aes(color = boundary_name)) +
+#   scale_colour_viridis_d() +
+#   xlim(-130 , -117) +
+#   ylim(ymin-2, ymax) +
+#   guides(color = guide_legend(reverse = TRUE)) +
+#   theme_minimal()
 ```
 
 ## Create Unified RCA Line Boundary Data
@@ -392,17 +408,64 @@ lines_sf <- rbind(shoreline, n_s_boundaries_sf, rca_lines_sf)
 
 ## Create RCA Polygons and Plots
 
-```{r fig.height=15, fig.width=8}
+
+```{r}
+convert_site_to_title <- function(fn) {
+  components <- str_split(fn, "_")[[1]]
+  
+  if (stringr::str_detect(components[5], "Shoreline")) {
+    remaining_components <- str_c(components[6:length(components)], collapse=" ")
+    title <- str_c(
+      "Year-Month: ", components[1], "\n", 
+      "Reference:   ", components[2], "\n", 
+      "North:          ", components[3], "\n", 
+      "South:          ", components[4], "\n",
+      "Shoreward:  ", components[5], "\n", 
+      "Seaward:     ", remaining_components
+    )
+  } else {
+    remaining_components <- str_c(components[7:length(components)], collapse=" ")
+    title <- str_c(
+      "Year-Month: ", components[1], "\n", 
+      "Reference:   ", components[2], "\n", 
+      "North:          ", components[3], "\n", 
+      "South:          ", components[4], "\n",
+      "Shoreward:  ", components[5], " ", components[6], "\n", 
+      "Seaward:     ", remaining_components
+    )
+  }
+  
+  return(title)
+}
+site1 <- "2006-03_mainland_U.S. EEZ Boundary_40 10.00' N_75fm_010105_200fm_040105"
+
+site2 <- "2008-05_mainland_43 20.83' N_42 40.50' N_Shoreline_200fm_010107"   
+
+title1 <- convert_site_to_title(site1)
+
+title2 <- convert_site_to_title(site2)
+
+cat(title1, title2, sep = "\n\n")
+```
+
+```{r }
 # Initialize an empty sf data frame with the correct structure
 all_sites_sf <- st_sf(
   SiteName = character(), 
   geometry = st_sfc(crs = st_crs(4326))
 )
+```
 
+
+```{r fig.height=15, fig.width=8}
 # Loop over each unique site
 for (site in unique(polygon_df$SiteName)) {
   
-  # site <- "TrawlRCA_2016-01_mainland_U.S. EEZ Boundary_48 10.00' N_Shoreline_200fm_petrale_031015.csv" 
+  # site <- "TrawlRCA_2016-01_mainland_U.S. EEZ Boundary_48 10.00' N_Shoreline_200fm_petrale_031015.csv"
+  # 
+  # site <- "TrawlRCA_2006-03_mainland_U.S. EEZ Boundary_40 10.00' N_75fm_010105.csv_200fm_040105.csv"
+  
+  # site <- "TrawlRCA_2002-12_mainland_U.S. EEZ Boundary_40 10.00' N_100fm_091002.csv_250fm_091002.csv"
   
   if (stringr::str_detect(site, "islands")) next
   
@@ -410,77 +473,84 @@ for (site in unique(polygon_df$SiteName)) {
     stringr::str_remove(pattern = "TrawlRCA_") |> 
     stringr::str_remove_all(pattern = ".csv")
   
-  site_tmp <- stringr::str_split(fn, " ")[[1]]
-  
-  title <- paste(
-    site_tmp[1], site_tmp[2], site_tmp[3], site_tmp[4], "\n", 
-    site_tmp[5],
-    sep = " "
-  )
+  title <- convert_site_to_title(fn)
   
   fn <- paste0(fn, ".jpg")
   fp <- here::here("plots", "polygon_plots", fn)
   
-  if (file.exists(fp)) next
+  # if (file.exists(fp)) next
   
-  # Create a polygon for the current site
   site_poly_sf <- polygon_df |>
     dplyr::filter(SiteName == site) |>
     dplyr::left_join(lines_sf, by = join_by(land_ref, boundary_type, boundary_name)) |>
     sf::st_as_sf() 
   
-  xmin <- site_poly_sf |> 
-    dplyr::filter(boundary_dir == "seaward") |> 
-    sf::st_bbox() 
+  bbox_vals <- site_poly_sf |>
+    summarise(
+      xmin = min(st_bbox(filter(site_poly_sf, boundary_dir == "seaward"))$xmin),
+      xmax = max(st_bbox(filter(site_poly_sf, boundary_dir == "shoreward"))$xmax),
+      ymin = min(st_bbox(filter(site_poly_sf, boundary_dir == "southern"))$ymin),
+      ymax = max(st_bbox(filter(site_poly_sf, boundary_dir == "northern"))$ymax)
+    ) |>
+    tibble::as_tibble() |>
+    select(-geometry) 
   
-  xmax <- site_poly_sf |> 
-    dplyr::filter(boundary_dir == "shoreward") |> 
-    sf::st_bbox()
+  bbox_sf <- st_sf(
+    geometry = st_sfc(
+      st_polygon(list(
+        matrix(
+          c(bbox_vals$xmin[1], bbox_vals$ymin[1],
+            bbox_vals$xmin[1], bbox_vals$ymax[1],
+            bbox_vals$xmax[1], bbox_vals$ymax[1],
+            bbox_vals$xmax[1], bbox_vals$ymin[1],
+            bbox_vals$xmin[1], bbox_vals$ymin[1]), 
+          byrow = TRUE, ncol = 2)
+      )),
+      crs = 4326
+    )
+  )
   
-  ymin <- site_poly_sf |> 
-    dplyr::filter(boundary_dir == "southern") |> 
-    sf::st_bbox()
+  # site_polygon <- site_poly_sf |>
+  #   sf::st_union() |>
+  #   sf::st_polygonize() |> 
+  #   sf::st_crop(bbox_sf) |> 
+  #   sf::st_as_sf()
   
-  ymax <- site_poly_sf |>
-    dplyr::filter(boundary_dir == "northern") |>
-    sf::st_bbox()
+  # if (is.na(sf::st_geometry_type(site_polygon)[1]) | sf::st_geometry_type(site_polygon)[1] == "LINESTRING") {
+    site_polygon <- site_poly_sf |>
+      sf::st_buffer(0.001) |>
+      sf::st_union() |>
+      sf::st_cast("MULTILINESTRING") |>
+      sf::st_polygonize() |> 
+      sf::st_crop(bbox_sf) |> 
+      sf::st_buffer(-0.001)  |>
+      sf::st_union() |> 
+      sf::st_as_sf()
+  # }
   
-  xmin <- as.numeric(xmin$xmin) 
-  xmax <- as.numeric(xmax$xmax)
-  ymin <- as.numeric(ymin$ymin)
-  ymax <- as.numeric(ymax$ymax)
-  
-  bbox_coords <- matrix(
-    c(xmin, ymin,
-      xmin, ymax,
-      xmax, ymax,
-      xmax, ymin,
-      xmin, ymin), 
-    byrow = TRUE, ncol = 2)
-  
-  bbox_sf <- st_sf(geometry = st_sfc(st_polygon(list(bbox_coords))), crs = 4326) 
-  
-  
-  site_polygon <- site_poly_sf |>
-    # sf::st_crop(bbox_sf)  |>
-    sf::st_union() |>
-    sf::st_polygonize()|>
-    sf::st_make_valid() 
-  
-    
   polygon_sf <- sf::st_sf(
     SiteName = site,
-    geometry = site_polygon
-  )
+    geometry = site_polygon$x
+  ) |> 
+    sf::st_collection_extract()
+  
+  if ((sf::st_geometry_type(polygon_sf)[1] == "MULTIPOLYGON") | length(polygon_sf) > 1) {
+    polygon_sf <- polygon_sf |>
+      sf::st_cast("POLYGON") |> 
+      dplyr::mutate(area = sf::st_area(geometry)) |>  
+      dplyr::arrange(desc(area)) |> 
+      dplyr::slice(1) |> 
+      dplyr::select(-area)
+  } else next
   
   all_sites_sf <- rbind(all_sites_sf, polygon_sf)
   
   p1 <- ggplot() +
-    geom_sf(data = site_polygon, fill = "red", linewidth=0.1) +
-    geom_sf(data = polygon_sf, fill = "red") +
-    geom_sf(data = eez_sf, fill = NA, color = "black") +
+    # geom_sf(data = site_polygon, linewidth=0.01) +
+    # geom_sf(data = site_poly_sf, linewidth=0.1) +
     geom_sf(data = n_s_boundaries_sf, color = "dodgerblue3") +
-    geom_sf(data = bbox_sf, fill = NA, color = "forestgreen") +
+    geom_sf(data = bbox_sf, fill = NA, color = "forestgreen", linewidth=1) +
+    geom_sf(data = polygon_sf, fill = "red", linewidth=0.1) +
     geom_sf(data = shoreline) +
     scale_y_continuous(breaks = seq(30, 48), expand = expansion(mult = c(0.001, 0.001))) +
     scale_x_continuous(expand = expansion(mult = c(0.001, 0.001))) +
@@ -490,39 +560,11 @@ for (site in unique(polygon_df$SiteName)) {
   ggsave(filename = fp, plot = p1, device = "jpeg", width = 8, height = 15)
 }
 
-sf::write_sf(all_sites_sf, here::here(data_path, "all_sites_sf.gpkg"))
+sf::write_sf(all_sites_sf, here::here(data_path, "mainland_closures.gpkg"))
 
 
 ```
 
-```{python}
-from shapely.ops import polygonize
-
-site_polygon = r.site_polygon
-
-polygons = list(polygonize(site_polygon))
-
-```
-
-
-```{r fig.height=15, fig.width=8}
-
-site_tmp <- stringr::str_split(site, " ")[[1]]
-title <- paste(
-  site_tmp[1], site_tmp[2], site_tmp[3], site_tmp[4], "\n", 
-  site_tmp[5],
-  sep = " "
-)
-p1 <- ggplot() +
-  geom_sf(data = site_poly_df, fill = "red") +
-  geom_sf(data = eez_sf, fill = NA, color = "black") + 
-  geom_sf(data = coastline_merge_sf) +
-  xlim(xmin-5, xmax) +
-  ylim(ymin-2, ymax) +
-  labs(title = title) +
-  theme_bw()
-
-```
 
 
 ## NOAA RCA Polygons
