@@ -18,7 +18,6 @@ librarian::shelf(
   openxlsx,
   terra,
   sf,
-  # rgeos,
   rnaturalearth, 
   rnaturalearthdata,
   foreach,
@@ -512,9 +511,11 @@ for (site in unique(polygon_df$SiteName)) {
   
   # site_polygon <- site_poly_sf |>
   #   sf::st_union() |>
-  #   sf::st_polygonize() |> 
-  #   sf::st_crop(bbox_sf) |> 
+  #   sf::st_polygonize() |>
+  #   sf::st_crop(bbox_sf) |>
   #   sf::st_as_sf()
+  
+  site_poly_sf <- sf::st_crop(site_poly_sf, bbox_sf) 
   
   # if (is.na(sf::st_geometry_type(site_polygon)[1]) | sf::st_geometry_type(site_polygon)[1] == "LINESTRING") {
     site_polygon <- site_poly_sf |>
@@ -547,11 +548,11 @@ for (site in unique(polygon_df$SiteName)) {
   
   p1 <- ggplot() +
     # geom_sf(data = site_polygon, linewidth=0.01) +
-    # geom_sf(data = site_poly_sf, linewidth=0.1) +
     geom_sf(data = n_s_boundaries_sf, color = "dodgerblue3") +
     geom_sf(data = bbox_sf, fill = NA, color = "forestgreen", linewidth=1) +
     geom_sf(data = polygon_sf, fill = "red", linewidth=0.1) +
     geom_sf(data = shoreline) +
+    geom_sf(data = site_poly_sf, linewidth=0.2, color = "darkorchid") +
     scale_y_continuous(breaks = seq(30, 48), expand = expansion(mult = c(0.001, 0.001))) +
     scale_x_continuous(expand = expansion(mult = c(0.001, 0.001))) +
     labs(title = title) +
