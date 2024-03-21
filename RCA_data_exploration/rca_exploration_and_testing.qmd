@@ -1,0 +1,1088 @@
+---
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+## Setup
+
+```{r}
+if (!require(librarian,quietly = T)){
+  install.packages('librarian')
+}
+
+librarian::shelf(
+  here,
+  # plotly,
+  readxl,
+  tidyverse,
+  lubridate,
+  data.table,
+  openxlsx,
+  terra,
+  leaflet,
+  sf,
+  openxlsx,
+  rnaturalearth, 
+  rnaturalearthdata,
+  # foreach,
+  # doParallel,
+  iterators,
+  quiet = T
+)
+
+sf_use_s2(FALSE)
+```
+
+## Getting lines from Cullen's methods
+
+### Read in data
+
+```{r}
+## directories
+data_path <- here::here('rca-database/Ruttenberg et al collaboration')
+coord_path <- here::here(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21')
+
+## files
+rca_data_fn  <- 'Historical_trawl_RCA_2002-2021_CEW_LC_01Oct2021.xlsx'
+cal_poly_fn  <- 'RCA_Mapping_Project_4Cal_Poly.gdb'
+eez_north_fn <- 'revised-sp/north-south-bounds/eez_north.shp'
+eez_south_fn <- 'revised-sp/north-south-bounds/eez_south.shp'
+
+## specify inputs
+rca_crs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+
+mollweide <- "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+```
+
+```{r}
+## Regulatory boundary points
+rca_legis_points_df <- coord_path |> 
+  list.files(full.names = TRUE) |> 
+  readr::read_csv(
+    locale = locale(encoding = "ISO-8859-1"), 
+    id = "boundary_name", 
+    show_col_types=FALSE)  |> 
+  dplyr::mutate(
+    area_name = stringr::str_replace_all(area_name, "-C", "- C"),
+    boundary_name = basename(boundary_name),
+    boundary_type = "isobath", 
+    land_ref = case_when(
+      str_detect(area_name, "Coastwide") ~ "mainland",
+      str_detect(area_name, "Washington") ~ "mainland",
+      # str_detect(area_name, "Cordell") ~ "mainland",
+      str_detect(area_name, "DBCA") ~ "mainland",
+      str_detect(area_name, "Petrale") ~ "mainland",
+      TRUE ~ "islands"
+    )) |> 
+  dplyr::rename(lat = lat_dd, lon = lon_dd) |> 
+  dplyr::filter(area_name != "150-fm (274-m) Contour - Seamounts - Lasuen Knoll") 
+
+## Create line strings for each isobath and area_name
+rca_lines_sf <- rca_legis_points_df |> 
+  sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)  |>  
+  dplyr::group_by(boundary_type, boundary_name, area_name, land_ref) |>
+  dplyr::arrange(id_area) |> 
+  dplyr::summarize(geometry = st_combine(geometry)) |> 
+  sf::st_cast("LINESTRING") 
+
+rca_lines_sf |> 
+  tibble::as_tibble() |>
+  dplyr::select(boundary_name, area_name, land_ref) |> 
+  readr::write_csv(here::here(data_path, "rca_lines_names.csv"))
+
+rca_lines_vec <- rca_lines_sf |> 
+  terra::vect()
+
+max_extent <- terra::ext(rca_lines_vec)
+xmin <- terra::xmin(max_extent)
+xmax <- terra::xmax(max_extent)
+ymin <- terra::ymin(max_extent)
+ymax <- terra::ymax(max_extent)
+
+
+## Load north america shapefile for plotting
+north_america <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf") |> 
+  dplyr::filter(admin %in% c("United States of America", "Canada", "Mexico"))
+```
+
+```{r}
+cal_poly_fp <- here::here(data_path, cal_poly_fn)
+cal_poly_layers <- terra::vector_layers(cal_poly_fp)
+
+ca_poly_rca_vect_list <- purrr::map(
+  cal_poly_layers,
+  ~terra::vect(cal_poly_fp, layer = .),
+  .progress=TRUE
+)
+
+cal_poly_layers <- stringr::str_remove_all(cal_poly_layers, "rca")
+cal_poly_layers <- stringr::str_remove_all(cal_poly_layers, "_line")
+
+ca_poly_rca_vect_df <- tibble::tibble(
+  layer_name = cal_poly_layers,
+  vect_info = ca_poly_rca_vect_list
+) |> 
+  dplyr::filter(layer_name != "Landmark_boundary_geocoordinates_table")
+
+shoreline_eez <- ca_poly_rca_vect_df |> 
+  dplyr::filter(layer_name == "EEZ_and_shoreline_Geo") |> 
+  dplyr::pull(vect_info)
+
+shoreline <- shoreline_eez[[1]] |> 
+  sf::st_as_sf() |>
+  tidyr::replace_na(replace = list(Name = "Shoreline")) |> 
+  dplyr::group_by(AreaType) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |> 
+  dplyr::mutate(
+    boundary_type = "isobath",
+    boundary_name = "Shoreline",
+    area_name = "Shoreline",
+    land_ref = ifelse(AreaType == "water", "mainland", "islands")) |> 
+  dplyr::select(boundary_type, boundary_name, area_name, land_ref, geometry)
+```
+
+
+### Exploring lines
+
+One of the potential causes for the polygons not drawing properly is defects in line geometries. As annotated in the sheet "rca_line_checking," it appears that the most common problems are the existence of points on land and the points being out of order. The first issue is problematic in itself because RCA must be in territorial waters. The second can cause self-intersections, leading to errors in subsequent polygon transformations.
+
+Below, we explore individual lines based on the CSV file name to see if these issues can be detected programmatically.
+
+```{r}
+# Assuming `rca_lines_sf` is your sf object and you're interested in plotting the first geometry
+plot_rca_line <- function(rca_lines_sf) {
+  # Extracting the first geometry (seems you've done this)
+  geom <- rca_lines_sf$geometry
+  
+  # Plot using ggplot2
+  ggplot() +
+    geom_sf(data = geom) +
+    ggtitle("Plot of MULTIPOINT Geometry") +
+    theme_minimal()
+}
+```
+
+From the JPG generated by Cullen's script, one the most visually noticeable error occurred for "60fm_010104.csv," where a Channel Island boundary point appears in a mainland area.
+
+```{r}
+# Filter observations where boundary_name is "60fm_010104.csv"
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "60fm_010104.csv")
+  # filter(boundary_name == "75fm_070104.csv")
+  # filter(boundary_name == "200fm_petrale_010107.csv")
+
+plot_rca_line(filtered_rca_lines_sf)
+```
+
+First, let's evaluate if there are intersecting lines among all the lines related to this specific sf. Presumably, there will be since an island point is inland.
+
+```{r}
+check_line_intersections <- function(filtered_rca_lines_sf) {
+  # Compute intersections
+  intersections <- st_intersects(filtered_rca_lines_sf)
+  # Check for any intersections
+  any_intersections <- any(lengths(intersections) > 1)
+  # Print result
+  if (any_intersections) {
+    cat("There are intersecting lines.\n")
+  } else {
+    cat("There are no intersecting lines.\n")
+  }
+}
+
+check_line_intersections(filtered_rca_lines_sf)
+```
+
+Now lets see if actually there is a line intersecting the shoreline.
+
+
+
+```{r}
+# Updated shoreline file without the EEZ
+coastline <- st_read( here("rca-database/spatial_ref_files/mainland_shore.geojson")) |>
+  sf::st_as_sf() |>
+  tidyr::replace_na(replace = list(Name = "Shoreline")) |>
+  dplyr::group_by(AreaType) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |>
+  dplyr::mutate(
+    boundary_type = "isobath",
+    boundary_name = "shoreline",
+    area_name = "shoreline",
+    land_ref = ifelse(AreaType == "islands", "islands", "mainland")) |>
+  dplyr::select(boundary_type, boundary_name, area_name, land_ref, geometry)
+```
+
+```{r}
+# UPDATE: no EEZ but mainline shore only
+check_shoreline_intersections <- function(filtered_rca_lines_sf) {
+  # Check for intersections between the lines and the shoreline
+  intersections_with_shoreline <- st_intersects(filtered_rca_lines_sf, coastline)
+  # Check for any intersections
+  any_intersections_with_shoreline <- any(lengths(intersections_with_shoreline) > 0)
+  # Print result
+  if (any_intersections_with_shoreline) {
+    cat("There are intersections between the lines and the shoreline.\n")
+  } else {
+    cat("There are no intersections between the lines and the shoreline.\n")
+  }
+}
+
+check_shoreline_intersections(filtered_rca_lines_sf)
+```
+
+*Note: It's important to be aware that this method assesses whether a line crosses the shoreline. This can result from an existing point inland, but also from incorrect geometry caused by self-intersections, which create segments intersecting with the shoreline.*
+
+Let's use another approach, this time evaluating whether the nodes are outside the expected areas.
+
+```{r}
+# Get a polygon for the islands
+islands_poly <-  shoreline[1,] %>% 
+  st_polygonize() %>% 
+  st_collection_extract("POLYGON")
+
+# Get a polygon for the eez
+eez_poly <-  shoreline[2,] %>% 
+  st_polygonize() %>% 
+  st_collection_extract("POLYGON")
+
+# Get the points for a specific boundary_name
+filtered_rca_points_sf <- rca_legis_points_df %>%
+  filter(boundary_name == "60fm_010104.csv") %>% 
+  sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+if (st_crs(eez_poly) != st_crs(islands_poly)) {
+  islands_poly <- st_transform(islands_poly, st_crs(eez_poly))
+}
+if (st_crs(eez_poly) != st_crs(filtered_rca_points_sf)) {
+  filtered_rca_points_sf <- st_transform(filtered_rca_points_sf, st_crs(eez_poly))
+}
+
+
+# Define a function to analyze points in relation to the polygon
+check_wrong_points <- function(points_sf, eez, islands) {
+  
+  points_within <- st_intersects(filtered_rca_points_sf, eez_poly)
+  # To get a logical vector indicating whether each point is inside the polygon
+  is_within <- lengths(points_within) > 0
+  # To see how many points are inside
+  n_points_in_land <-sum(!is_within)
+  # You can also create a subset of points that are inside the polygon if needed
+  points_in_land <- filtered_rca_points_sf[!is_within, ]
+  
+  
+  points_within <- st_intersects(filtered_rca_points_sf, islands_poly)
+  # To get a logical vector indicating whether each point is inside the polygon
+  is_within <- lengths(points_within) > 0
+  # To see how many points are inside
+  n_points_in_islands <- sum(is_within)
+  # You can also create a subset of points that are inside the polygon if needed
+  points_in_islands <- filtered_rca_points_sf[is_within, ]
+  
+  # Return a list with the counts and subsets
+  return(list(
+    n_points_in_land = n_points_in_land,
+    points_in_land = points_in_land,
+    n_points_in_islands = n_points_in_islands,
+    points_in_islands = points_in_islands
+  ))
+}
+
+wrong_points <- check_wrong_points(filtered_rca_points_sf, eez_poly, islands_eez_poly)
+wrong_points
+```
+
+We can see that there are two points that are outside the EEZ, but only one is inland. The other is at the limit of the EEZ's northern border, which doesn't necessarily mean it is incorrectly located. In fact, if we zoom in on the leaflet map below, we see that it is almost inside the EEZ, probably due to slight changes in the spatial transformation of the northern border line. We will have to consider this when assessing the rest of the lines.
+
+```{r}
+leaflet() %>%
+  addTiles() %>%
+  addPolygons(data = eez_poly, color = "blue", weight = 1, fillColor = "blue", fillOpacity = 0.1) %>% 
+  addCircleMarkers(data = wrong_points$points_in_land, color = "red", radius = 3, fillOpacity = 1.0, stroke = FALSE)
+```
+
+Finally, let's explore whether self-intersections may occur, potentially creating additional problems.
+
+```{r}
+check_self_intersections <- function(filtered_rca_lines_sf) {
+  # Check each line for simplicity (i.e., it does not cross itself)
+  is_simple <- st_is_simple(filtered_rca_lines_sf)
+  # Identify lines that are not simple (i.e., have self-intersections)
+  self_intersecting_lines <- filtered_rca_lines_sf[!is_simple, ]
+  # Check if there are any self-intersecting lines and print result
+  if (nrow(self_intersecting_lines) > 0) {
+    cat("There are self-intersecting lines.\n")
+  } else {
+    cat("There are no self-intersecting lines.\n")
+  }
+}
+
+check_self_intersections(filtered_rca_lines_sf)
+```
+
+In this case, we observe that there are no self-intersections, so the issue with this line arises only from a point being located inland. 
+
+Let's explore another example where self-intersection actually occurs.
+
+```{r}
+# Filter observations where boundary_name is "60fm_010104.csv"
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "200fm_petrale_010107.csv")
+
+check_self_intersections(filtered_rca_lines_sf)
+```
+
+In this case, we detect self-intersection, and upon checking the associated jpg, it becomes evident that it's occurring in front of Point Conception.
+
+With this in mind, let's create a loop to run the evaluation for all lines and automate the process. We will store the results in a dataframe containing the boundary name, the area names, and variables displaying information on whether a line self-intersects or intersects with the shoreline.
+
+```{r}
+# ## FIRST ATTEMPT ONLY CONSIDERED BOUNDARY NAMES
+# # Initialize dataframe
+# lines_check_df <- data.frame(boundary_name = character(),
+#                                    self_intersects = logical(),
+#                                    land_point = logical(),
+#                                    stringsAsFactors = FALSE)
+# 
+# for (i in unique(rca_lines_sf$boundary_name)) {
+#   # Filter lines by boundary name
+#   line_vec <- rca_lines_sf %>% 
+#     filter(boundary_name == i)
+#   # Self-intersection evaluation
+#   is_simple <- st_is_simple(line_vec) 
+#   self_intersects <- any(!is_simple) 
+#   # Shoreline evaluation
+#   intersections_with_shoreline <- st_intersects(line_vec, shoreline)
+#   any_intersections_with_shoreline <- any(lengths(intersections_with_shoreline)>0)
+#   lines_check_df <- rbind(lines_check_df, 
+#                                 data.frame(
+#                                   boundary_name = i, 
+#                                   self_intersects = self_intersects,
+#                                   land_point = any_intersections_with_shoreline))
+# }
+```
+
+The loop below evaluates by line intersection instead of point based.
+
+```{r}
+# Initialize an empty dataframe to store results
+lines_check_df <- data.frame(boundary_name = character(),
+                                   area_name = character(),
+                                   self_intersects = logical(),
+                                   land_point = logical(),
+                                   stringsAsFactors = FALSE)
+
+for (i in unique(rca_lines_sf$boundary_name)) {
+  # Filter lines by boundary name
+  line_vec <- rca_lines_sf %>%
+    filter(boundary_name == i)
+
+  for (j in unique(line_vec$area_name)) {
+    # Filter lines by boundary name
+    line_unique_vec <- line_vec %>%
+      filter(area_name == j)
+    # Self-intersection evaluation
+    ## Check each line for simplicity (i.e., it does not cross itself)
+    self_intersects <- !st_is_simple(line_unique_vec)
+    # Shoreline evaluation
+    ## Check for intersections between the line and the shoreline
+    intersections_with_shoreline <- suppressMessages(st_intersects(line_unique_vec, coastline))
+    any_intersections_with_shoreline <- any(lengths(intersections_with_shoreline)>0)
+    # Append the results to the dataframe
+    lines_check_df <- rbind(lines_check_df,
+                            data.frame(
+                              boundary_name = i,
+                              area_name = j,
+                              self_intersects = self_intersects,
+                              land_point = any_intersections_with_shoreline))
+  }
+}
+
+# Display the resulting dataframe
+head(lines_check_df)
+```
+
+The loop below evaluates based on points location.
+
+```{r}
+# Initialize an empty dataframe to store results
+lines_check_df <- data.frame(boundary_name = character(),
+                                   area_name = character(),
+                                   self_intersects = logical(),
+                                   land_points = logical(),
+                                   stringsAsFactors = FALSE)
+
+for (i in unique(rca_lines_sf$boundary_name)) {
+  # Filter lines by boundary name
+  line_vec <- rca_lines_sf %>% 
+    filter(boundary_name == i)
+  
+  point_vec <- rca_legis_points_df %>%
+    filter(boundary_name == i) %>% 
+    sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)
+  
+  for (j in unique(line_vec$area_name)) {
+    # Filter lines by boundary name
+    line_unique_vec <- line_vec %>% 
+      filter(area_name == j)
+    
+    point_unique_vec <- point_vec %>% 
+      filter(area_name == j)
+    
+    # Self-intersection evaluation
+    ## Check each line for simplicity (i.e., it does not cross itself)
+    self_intersects <- !st_is_simple(line_unique_vec)
+    
+    # Inland points evaluation
+    ## Mainland
+    points_within <- suppressMessages(st_intersects(point_unique_vec, eez_poly))
+    is_within <- lengths(points_within) > 0
+    n_points_in_land <-sum(!is_within)
+    ## Islands
+    points_within <- suppressMessages(st_intersects(point_unique_vec, islands_poly))
+    is_within <- lengths(points_within) > 0
+    n_points_in_islands <- sum(is_within)
+    ## Sum
+    wrong_points <- n_points_in_land + n_points_in_islands
+
+    # Append the results to the dataframe
+    lines_check_df <- rbind(lines_check_df,
+                            data.frame(
+                              boundary_name = i, 
+                              area_name = j,
+                              self_intersects = self_intersects,
+                              land_points = wrong_points))
+  }
+}
+
+# Display the resulting dataframe
+head(lines_check_df)
+```
+
+There are `r sum(lines_check_df['land_points'] | lines_check_df['self_intersects'])` lines with errors.
+
+Store the resulting dataframe into a formatted xlsx file.
+
+```{r}
+# SAVE intersection based approach
+wb <- createWorkbook() # Create a new workbook
+addWorksheet(wb, "Data") # Add a worksheet to the workbook
+writeData(wb, "Data", lines_check_df) # Write your dataframe to the worksheet
+
+# Define red font style
+redFontStyle <- createStyle(fontColour = "#FF0000")
+
+# Conditional formatting for 'land_points' or 'self_intersects' being TRUE
+conditionalFormatting(wb, "Data", cols = 1:ncol(lines_check_df), rows = 2:(nrow(lines_check_df) + 1), rule = "ISNUMBER(SEARCH(\"TRUE\", INDIRECT(ADDRESS(ROW(),COLUMN()))))", style = redFontStyle)
+
+# Save the workbook
+saveWorkbook(wb, "rca-database/lines_check_df.xlsx", overwrite = TRUE)
+```
+
+
+```{r}
+# SAVE point based approach
+wb <- createWorkbook() # Create a new workbook
+addWorksheet(wb, "Data") # Add a worksheet to the workbook
+writeData(wb, "Data", lines_check_df) # Write your dataframe to the worksheet
+
+# Color in red those observations representing conflicted lines
+nrows <- nrow(lines_check_df)
+redFontStyle <- createStyle(fontColour = "#FF0000")
+# Apply conditional formatting
+for (i in 1:nrows) {
+  if (lines_check_df$land_points[i] || lines_check_df$self_intersects[i]) {
+    # Apply red font style to the entire row
+    addStyle(wb, "Data", style = redFontStyle, rows = i + 1, cols = 1:ncol(lines_check_df), gridExpand = TRUE)
+  }
+}
+
+# Save the workbook
+saveWorkbook(wb, "rca-database/lines_check_df.xlsx", overwrite = TRUE)
+```
+
+
+As evident from the generated XLSX file, there appear to be more geometries with errors than those included in the "rca_line_checking" sheet. This may explain the unexpected issues that could be causing mistakes in polygon generation. Below, we explore these identified incorrect geometries and discuss why they were not easily detected with the naked eye.
+
+An example of this is the "75fm_070104.csv" file, which, upon inspection of the related JPG, does not seem to present any issues.
+
+```{r}
+# Filter observations where boundary_name is "60fm_010104.csv"
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "75fm_070104.csv")
+
+plot_rca_line(filtered_rca_lines_sf)
+```
+
+Let's run the individual functions to check for points inland and self-intersection.
+
+```{r}
+check_shoreline_intersections(filtered_rca_lines_sf)
+check_self_intersections(filtered_rca_lines_sf)
+
+is_simple <- st_is_simple(filtered_rca_lines_sf)
+filtered_rca_lines_sf[!is_simple, ]$area_name
+```
+
+From this analysis, it appears that the lines are self-intersecting, particularly the one related to Santa Catalina Island.
+
+To further evaluate where the self-intersection is occurring, we can save the data as a shapefile and conduct the examination in QGIS, utilizing the "Check Geometries" plugin. Save the file and proceed to QGIS for the exploration.
+
+```{r}
+st_write(filtered_rca_lines_sf, here("rca-database/line_shapefile/line_shapefile.shp"))
+```
+
+The intersections seem to occur at the western vertex of the shape surrounding the island, where two nodes force that intersection.
+
+## Read in data for polygon generation
+
+```{r}
+north_eez <- here::here(data_path, eez_north_fn) |> 
+  sf::read_sf() |>
+  dplyr::mutate(
+    boundary_type = 'latitude',
+    boundary_name = 'U.S. EEZ Boundary North',
+    area_name = 'U.S. EEZ Boundary North') 
+
+south_eez <- here::here(data_path, eez_south_fn) |> 
+  sf::read_sf() |>
+  dplyr::mutate(
+    boundary_type = 'latitude',
+    boundary_name = 'U.S. EEZ Boundary South',
+    area_name = 'U.S. EEZ Boundary South') 
+
+eez_sf <- rbind(north_eez, south_eez) |> 
+  sf::st_transform(rca_crs) |>
+  dplyr::filter(OBJECTID == 1)|>
+  dplyr::select(boundary_type, boundary_name, area_name, geometry) |> 
+  dplyr::mutate(land_ref = "mainland")
+```
+
+```{r}
+## information for building polygons
+polygon_df_orig <- here::here(data_path, rca_data_fn) |> 
+  openxlsx::read.xlsx(sheet = 4) |> 
+  janitor::clean_names() 
+
+## Create clean data frame of polygon metadata
+polygon_df <- polygon_df_orig |> 
+  dplyr::select(-completed) |>
+  dplyr::filter(shoreward_boundary != "N/A") |>
+  dplyr::mutate(
+    SiteName = paste(## Create unique site name for id
+      "TrawlRCA", year_month, land_ref, northern_boundary,
+      southern_boundary, shoreward_boundary, seaward_boundary,
+      sep = "_")) |>
+  tidyr::pivot_longer(
+    northern_boundary:seaward_boundary,
+    names_to = 'boundary_dir', 
+    values_to = 'boundary_name') |>
+  dplyr::mutate(
+    boundary_dir = stringr::str_remove(boundary_dir, '_boundary'),
+    boundary_name = dplyr::case_when(
+      boundary_name == "U.S. EEZ boundary" ~ "U.S. EEZ Boundary",
+      boundary_name == "45 46.00'N" ~ "45 46.00' N",
+      boundary_name == '0 fm (100fm_010119.csv)' ~ '100fm_010119.csv',
+      boundary_name == "0 fm (Shoreline)" ~ "Shoreline",
+      TRUE ~ stringr::str_remove(gsub("[()]", "", boundary_name), pattern = "0 fm "))) |>
+  tidyr::pivot_wider(
+    names_from = boundary_dir, 
+    values_from = boundary_name) |>
+  dplyr::mutate(## Update unique site name for id
+    SiteName = paste("TrawlRCA", year_month, land_ref, northern, 
+                     southern, shoreward, seaward, sep = "_"),
+    ns_bounds = paste(northern, southern, sep = "_")) |>
+  tidyr::pivot_longer(
+    northern:seaward, 
+    names_to = 'boundary_dir', 
+    values_to = 'boundary_name') |>
+  dplyr::mutate(
+    boundary_type = dplyr::case_when( ## add column for joining later
+      boundary_dir %in% c('northern', 'southern') ~ 'latitude',
+      TRUE ~ 'isobath'),
+    boundary_name = dplyr::case_when(
+      boundary_name == "U.S. EEZ Boundary" & boundary_dir == "northern" ~ 
+        "U.S. EEZ Boundary North",
+      boundary_name == "U.S. EEZ Boundary" & boundary_dir == "southern" ~ 
+        "U.S. EEZ Boundary South",
+      TRUE ~ boundary_name)) |>
+  dplyr::select(SiteName, year_month, land_ref, ns_bounds, 
+                boundary_type, boundary_dir, boundary_name)
+
+north_south_lats <- polygon_df |> 
+  dplyr::filter(
+    boundary_type == 'latitude',
+    !boundary_name %in% c(
+      'U.S. EEZ Boundary North', 
+      'U.S. EEZ Boundary South')) |> 
+  dplyr::distinct(boundary_name) |> 
+  dplyr::arrange(boundary_name) |> 
+  dplyr::pull(boundary_name)
+
+
+```
+
+```{r}
+convert_to_decimal <- function(lat_str) {
+  # Split the string by space and apostrophe to extract degrees, minutes, and direction
+  parts <- unlist(strsplit(lat_str, " |'"))
+  degree <- as.numeric(parts[1])
+  minutes <- as.numeric(parts[2])
+  direction <- parts[3]
+  
+  # Convert to decimal degrees
+  decimal_deg <- degree + (minutes / 60)
+  
+  # Adjust sign for southern latitudes
+  if (direction == "S") {
+    decimal_deg <- -decimal_deg
+  }
+  
+  return(decimal_deg)
+}
+
+
+# Function to create an sf data frame of lines
+create_sf_lines <- function(
+    north_south_lats, 
+    xmin = -130, 
+    xmax = -117
+) {
+  # Convert latitudes to decimal degrees
+  decimal_lats <- sapply(north_south_lats, convert_to_decimal)
+  
+  make_lat_line <- function(lat) {
+    st_linestring(
+      matrix(c(xmin, lat, xmax, lat),
+             ncol = 2, byrow = TRUE))
+  }
+  # Create lines within the specified extent
+  lines_list <- lapply(decimal_lats, make_lat_line)
+  
+  # Create an sf data frame
+  sf_lines <- st_sf(
+    boundary_type = "latitude", 
+    boundary_name = north_south_lats, 
+    area_name = north_south_lats,
+    geometry = st_sfc(lines_list)
+  )
+  
+  # Set CRS to EPSG:4326
+  sf_lines <- st_set_crs(sf_lines, 4326)
+  
+  return(sf_lines)
+}
+
+lat_sf <- create_sf_lines(
+  north_south_lats, #xmin, xmax,
+) |> 
+  dplyr::mutate(land_ref = "mainland")
+
+n_s_boundaries_sf <- rbind(eez_sf, lat_sf)
+```
+
+
+## Further testing (not tidy)
+
+
+```{r}
+# Filter observations where boundary_name is "60fm_010104.csv"
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "150fm_030106.csv")
+
+plot_rca_line(filtered_rca_lines_sf)
+```
+
+```{r}
+check_shoreline_intersections(filtered_rca_lines_sf)
+check_self_intersections(filtered_rca_lines_sf)
+
+is_simple <- st_is_simple(filtered_rca_lines_sf)
+filtered_rca_lines_sf[!is_simple, ]$area_name
+```
+
+```{r}
+st_write(eez_poly, here("rca-database/line_shapefile/shoreline.shp"))
+```
+
+
+```{r}
+  # Check for intersections between the lines and the shoreline
+  intersections_with_shoreline <- st_intersects(filtered_rca_lines_sf, shoreline)
+  # Check for any intersections
+  any_intersections_with_shoreline <- any(lengths(intersections_with_shoreline) > 0)
+  # Print result
+  if (any_intersections_with_shoreline) {
+    cat("There are intersections between the lines and the shoreline.\n")
+  } else {
+    cat("There are no intersections between the lines and the shoreline.\n")
+  }
+```
+
+```{r}
+intersection <- st_intersection(filtered_rca_lines_sf, shoreline)
+
+intersection_df <- st_as_sf(intersection)
+shoreline_df <- st_as_sf(shoreline)
+rca_df_line <- st_as_sf(filtered_rca_lines_sf)
+# Create a leaflet map
+map <- leaflet() %>%
+  # Add a base map
+  addTiles() %>%
+  # Add shoreline to the map, assuming it's a polygon or line
+  addPolylines(data = rca_df_line, color = "green", weight = 2) %>%
+   addPolygons(data = shoreline_df, color = "blue", weight = 1, fillColor = "blue", fillOpacity = 0.1) %>% 
+  # Add intersections as circle markers
+  addCircleMarkers(data = intersection_df, color = "red", radius = 5, fillOpacity = 1.0, stroke = FALSE)
+
+# Show the map
+map
+
+```
+
+It seems that the intersections occur at the offshore boundaries of the shoreline polygons. Consider reconstructing the shoreline sf object to include only the coastline.
+
+### Generating the polygons
+
+
+
+```{r}
+lines_sf <- rbind(shoreline, n_s_boundaries_sf, rca_lines_sf)
+```
+
+
+
+
+The code below generates the shapes. RUN IT ONLY ONCE.
+
+```{r}
+convert_site_to_title <- function(fn) {
+  components <- str_split(fn, "_")[[1]]
+
+  if (stringr::str_detect(components[5], "Shoreline")) {
+    remaining_components <- str_c(components[6:length(components)], collapse=" ")
+    title <- str_c(
+      "Year-Month: ", components[1], "\n",
+      "Reference:   ", components[2], "\n",
+      "North:          ", components[3], "\n",
+      "South:          ", components[4], "\n",
+      "Shoreward:  ", components[5], "\n",
+      "Seaward:     ", remaining_components
+    )
+  } else {
+    remaining_components <- str_c(components[7:length(components)], collapse=" ")
+    title <- str_c(
+      "Year-Month: ", components[1], "\n",
+      "Reference:   ", components[2], "\n",
+      "North:          ", components[3], "\n",
+      "South:          ", components[4], "\n",
+      "Shoreward:  ", components[5], " ", components[6], "\n",
+      "Seaward:     ", remaining_components
+    )
+  }
+
+  return(title)
+}
+site1 <- "2006-03_mainland_U.S. EEZ Boundary_40 10.00' N_75fm_010105_200fm_040105"
+
+site2 <- "2008-05_mainland_43 20.83' N_42 40.50' N_Shoreline_200fm_010107"
+
+title1 <- convert_site_to_title(site1)
+
+title2 <- convert_site_to_title(site2)
+
+cat(title1, title2, sep = "\n\n")
+```
+
+
+```{r}
+
+process_sites <- function(polygon_df, lines_sf, output_path) {
+  # Loop over each unique site
+  for (site in unique(polygon_df$SiteName)) {
+  
+    if (stringr::str_detect(site, "islands")) next
+  
+    fn <- site |>
+      stringr::str_remove(pattern = "TrawlRCA_") |>
+      stringr::str_remove_all(pattern = ".csv")
+  
+    title <- convert_site_to_title(fn)
+  
+    fn <- paste0(fn, ".jpg")
+    fp <- here::here("plots", "polygon_plots", fn)
+  
+    # if (file.exists(fp)) next
+  
+    site_poly_sf <- polygon_df |>
+      dplyr::filter(SiteName == site) |>
+      dplyr::left_join(lines_sf, by = join_by(land_ref, boundary_type, boundary_name)) |>
+      sf::st_as_sf()
+  
+    bbox_vals <- site_poly_sf |>
+      summarise(
+        xmin = min(st_bbox(filter(site_poly_sf, boundary_dir == "seaward"))$xmin),
+        xmax = max(st_bbox(filter(site_poly_sf, boundary_dir == "shoreward"))$xmax),
+        ymin = min(st_bbox(filter(site_poly_sf, boundary_dir == "southern"))$ymin),
+        ymax = max(st_bbox(filter(site_poly_sf, boundary_dir == "northern"))$ymax)
+      ) |>
+      tibble::as_tibble() |>
+      select(-geometry)
+  
+    bbox_sf <- st_sf(
+      geometry = st_sfc(
+        st_polygon(list(
+          matrix(
+            c(bbox_vals$xmin[1], bbox_vals$ymin[1],
+              bbox_vals$xmin[1], bbox_vals$ymax[1],
+              bbox_vals$xmax[1], bbox_vals$ymax[1],
+              bbox_vals$xmax[1], bbox_vals$ymin[1],
+              bbox_vals$xmin[1], bbox_vals$ymin[1]),
+            byrow = TRUE, ncol = 2)
+        )),
+        crs = 4326
+      )
+    )
+  
+    # site_polygon <- site_poly_sf |>
+    #   sf::st_union() |>
+    #   sf::st_polygonize() |>
+    #   sf::st_crop(bbox_sf) |>
+    #   sf::st_as_sf()
+  
+    site_poly_sf <- sf::st_crop(site_poly_sf, bbox_sf)
+  
+    # if (is.na(sf::st_geometry_type(site_polygon)[1]) | sf::st_geometry_type(site_polygon)[1] == "LINESTRING") {
+      site_polygon <- site_poly_sf |>
+        sf::st_buffer(0.001) |>
+        sf::st_union() |>
+        sf::st_cast("MULTILINESTRING") |>
+        sf::st_polygonize() |>
+        sf::st_crop(bbox_sf) |>
+        sf::st_buffer(-0.001)  |>
+        sf::st_union() |>
+        sf::st_as_sf()
+    # }
+  
+    polygon_sf <- sf::st_sf(
+      SiteName = site,
+      geometry = site_polygon$x
+    ) |>
+      sf::st_collection_extract()
+  
+    if ((sf::st_geometry_type(polygon_sf)[1] == "MULTIPOLYGON") | length(polygon_sf) > 1) {
+      polygon_sf <- polygon_sf |>
+        sf::st_cast("POLYGON") |>
+        dplyr::mutate(area = sf::st_area(geometry)) |>
+        dplyr::arrange(desc(area)) |>
+        dplyr::slice(1) |>
+        dplyr::select(-area)
+    } else next
+  
+    all_sites_sf <- rbind(all_sites_sf, polygon_sf)
+  }
+  
+  
+  sf::write_sf(all_sites_sf, here::here(output_path, "mainland_closures.gpkg"))
+  
+  return(all_sites_sf)
+}
+```
+
+```{r}
+process_sites <- process_sites(polygon_df, lines_sf, data_path)
+
+```
+
+Instead we will read it from the already generated and locally stored file
+
+```{r}
+all_sites_sf <- mainland_closures <- st_read(here::here(data_path, "mainland_closures_cullen.gpkg"))
+```
+
+### Individual testing
+
+```{r}
+filtered_sites <- all_sites_sf %>%
+  filter(str_detect(SiteName, "TrawlRCA_2003-12_mainland_34 27.00' N_U.S. EEZ Boundary_Shoreline_200fm_petrale_112103.csv"))
+
+dim(all_sites_sf)[1]-sum(st_is_simple(all_sites_sf))
+dim(all_sites_sf)[1]-sum(st_is_valid(all_sites_sf))
+```
+
+Apparently all polygons have a correct geometry and are valid.
+
+```{r}
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "200fm_petrale_112103.csv")
+
+# Get the points for a specific boundary_name
+filtered_rca_points_sf <- rca_legis_points_df %>%
+  filter(boundary_name == "200fm_petrale_112103.csv") %>% 
+  sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+wrong_points_eval <- check_wrong_points(filtered_rca_points_sf,eez_poly,islands_poly)
+wrong_points_eval
+
+leaflet() %>%
+  addTiles() %>%
+  addPolygons(data = eez_poly, color = "blue", weight = 1, fillColor = "blue", fillOpacity = 0.1) %>% 
+  addPolygons(data = filtered_sites, color = "yellow", weight = 1, fillColor = "yellow", fillOpacity = 0.1) %>% 
+  addPolylines(data = filtered_rca_lines_sf, color = "orange") %>% 
+  addCircleMarkers(data = wrong_points_eval$points_in_land, color = "red", radius = 3, fillOpacity = 1.0, stroke = FALSE)
+```
+
+```{r}
+lines_sf <- rbind(shoreline, n_s_boundaries_sf, filtered_rca_lines_sf)
+```
+
+removing the loop. individual evaluation
+
+```{r}
+
+site2 <- polygon_df %>%
+  filter(str_detect(SiteName, "TrawlRCA_2003-12_mainland_34 27.00' N_U.S. EEZ Boundary_Shoreline_200fm_petrale_112103.csv"))
+
+site <- site2$SiteName
+
+
+all_sites_sf <- st_sf(
+  SiteName = character(), 
+  geometry = st_sfc(crs = st_crs(4326))
+)
+
+fn <- site |> 
+  stringr::str_remove(pattern = "TrawlRCA_") |> 
+  stringr::str_remove_all(pattern = ".csv")
+
+title <- convert_site_to_title(fn)
+
+fn <- paste0(fn, ".jpg")
+fp <- here::here("plots", "polygon_plots", fn)
+
+# if (file.exists(fp)) next
+
+site_poly_sf <- polygon_df |>
+  dplyr::filter(SiteName == site) |>
+  dplyr::left_join(lines_sf, by = join_by(land_ref, boundary_type, boundary_name)) |>
+  sf::st_as_sf() 
+
+bbox_vals <- site_poly_sf |>
+  summarise(
+    xmin = min(st_bbox(filter(site_poly_sf, boundary_dir == "seaward"))$xmin),
+    xmax = max(st_bbox(filter(site_poly_sf, boundary_dir == "shoreward"))$xmax),
+    ymin = min(st_bbox(filter(site_poly_sf, boundary_dir == "southern"))$ymin),
+    ymax = max(st_bbox(filter(site_poly_sf, boundary_dir == "northern"))$ymax)
+  ) |>
+  tibble::as_tibble() |>
+  select(-geometry) 
+
+bbox_sf <- st_sf(
+  geometry = st_sfc(
+    st_polygon(list(
+      matrix(
+        c(bbox_vals$xmin[1], bbox_vals$ymin[1],
+          bbox_vals$xmin[1], bbox_vals$ymax[1],
+          bbox_vals$xmax[1], bbox_vals$ymax[1],
+          bbox_vals$xmax[1], bbox_vals$ymin[1],
+          bbox_vals$xmin[1], bbox_vals$ymin[1]), 
+        byrow = TRUE, ncol = 2)
+    )),
+    crs = 4326
+  )
+)
+
+# site_polygon <- site_poly_sf |>
+#   sf::st_union() |>
+#   sf::st_polygonize() |>
+#   sf::st_crop(bbox_sf) |>
+#   sf::st_as_sf()
+
+site_poly_sf <- sf::st_crop(site_poly_sf, bbox_sf) 
+
+# if (is.na(sf::st_geometry_type(site_polygon)[1]) | sf::st_geometry_type(site_polygon)[1] == "LINESTRING") {
+  site_polygon <- site_poly_sf |>
+    sf::st_buffer(0.001) |>
+    sf::st_union() |>
+    sf::st_cast("MULTILINESTRING") |>
+    sf::st_polygonize() |> 
+    sf::st_crop(bbox_sf) |> 
+    sf::st_buffer(-0.001)  |>
+    sf::st_union() |> 
+    sf::st_as_sf()
+# }
+
+polygon_sf <- sf::st_sf(
+  SiteName = site,
+  geometry = site_polygon$x
+) |> 
+  sf::st_collection_extract()
+
+if ((sf::st_geometry_type(polygon_sf)[1] == "MULTIPOLYGON") | length(polygon_sf) > 1) {
+  polygon_sf <- polygon_sf |>
+    sf::st_cast("POLYGON") |> 
+    dplyr::mutate(area = sf::st_area(geometry)) |>  
+    dplyr::arrange(desc(area)) |> 
+    dplyr::slice(1) |> 
+    dplyr::select(-area)
+} else next
+
+all_sites_sf <- rbind(all_sites_sf, polygon_sf)
+  
+
+leaflet() %>%
+  addTiles() %>%
+  addPolygons(data = eez_poly, color = "blue", weight = 1, fillColor = "blue", fillOpacity = 0.1) %>% 
+  addPolygons(data = all_sites_sf, color = "yellow", weight = 1, fillColor = "yellow", fillOpacity = 0.1) %>% 
+  addPolylines(data = filtered_rca_lines_sf_short, color = "orange") %>% 
+  addCircleMarkers(data = wrong_points_eval$points_in_land, color = "red", radius = 3, fillOpacity = 1.0, stroke = FALSE)
+  
+```
+
+
+filtered_rca_lines_sf goes beyond the southern border. testing whether this may be influencing.
+Also could be the shoreline if it is intersected farther in the west (same area example in point conception)
+
+```{r}
+st_write(filtered_rca_lines_sf, here("rca-database/line_shapefile/filtered_rca_lines_sf.geojson"))
+
+filtered_rca_lines_sf_short <- st_read( here("rca-database/line_shapefile/filtered_rca_lines_sf.geojson"))
+mainland_shore <- st_read( here("rca-database/line_shapefile/mainland_shore.geojson"))
+
+```
+
+Evaluating the influence of liens going beyond the borders, this has to be discarded as the cause of the problem.
+
+```{r}
+leaflet() %>%
+  addTiles() %>%
+  addPolylines(data = site_poly_sf, color = "orange")
+
+```
+
+```{r}
+st_write(site_poly_sf, here("rca-database/line_shapefile/bounding_lines.geojson"))
+
+```
+
+```{r}
+# mainland_shore <- st_read( here("rca-database/line_shapefile/mainland_shore.geojson")) |> 
+mainland_shore <- st_read( here("rca-database/line_shapefile/shoreline_all.geojson")) |> 
+  sf::st_as_sf() |>
+  tidyr::replace_na(replace = list(Name = "Shoreline")) |> 
+  dplyr::group_by(AreaType) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |> 
+  dplyr::mutate(
+    boundary_type = "isobath",
+    boundary_name = "Shoreline",
+    area_name = "Shoreline",
+    land_ref = ifelse(AreaType == "water", "mainland", "islands")) |> 
+  dplyr::select(boundary_type, boundary_name, area_name, land_ref, geometry)
+
+
+
+lines_sf <- rbind(mainland_shore, n_s_boundaries_sf, filtered_rca_lines_sf)
+```
+
+Excluding the wester border of the EEZ we see that the shape is generated correctly. below we will apply that procedure to all of the shapes.
+
