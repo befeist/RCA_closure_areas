@@ -36,6 +36,13 @@ librarian::shelf(
 sf_use_s2(FALSE)
 ```
 
+## Read in data
+
+```{r}
+# Read in data using script (this helps keeping tidy the qmd)
+source(here("RCA_data_exploration/scripts/generate_rca_objects.R"))
+```
+
 ## Prepare testing data
 
 NOTE: Run rca_exploration_and_testing.qmd to load the data.
@@ -43,7 +50,7 @@ NOTE: Run rca_exploration_and_testing.qmd to load the data.
 ```{r}
 # Read in data
 ## The new approach considers the coastline independently than the EEZ
-coastline <- st_read( here("rca-database/line_shapefile/shoreline_all.geojson"))
+coastline <- st_read(here(data_path,"spatial_ref_files/all_shoreline.geojson"))
 ## From the original Cullen's code. If rca_lines_sf not available, run polygonize.qmd
 longitude_lines <- rca_lines_sf
 ## Latitude lines
@@ -240,7 +247,7 @@ Try using the non-combined shoreline file:
 ```{r}
 # Read in data
 # The new approach considers the coastline independently than the EEZ
-coastline <- st_read( here("rca-database/spatial_ref_files/mainland_shore.geojson")) |>
+coastline <- st_read( here(data_path,"spatial_ref_files/mainland_shore.geojson")) |>
   sf::st_as_sf() |>
   tidyr::replace_na(replace = list(Name = "Shoreline")) |>
   dplyr::group_by(AreaType) |>
@@ -254,13 +261,10 @@ coastline <- st_read( here("rca-database/spatial_ref_files/mainland_shore.geojso
 ```
 
 ```{r}
-coastline <- st_read( here("rca-database/spatial_ref_files/all_shoreline_main_comb.geojson")) %>% 
+coastline <- st_read( here(data_path,"spatial_ref_files/all_shoreline_main_comb.geojson")) %>% 
   rename(
     land_ref = area_name,
     area_name = AreaType_2) %>% 
-  # sf::st_as_sf() |>
-  # dplyr::group_by(land_ref) |>
-  # dplyr::summarize(geometry = sf::st_union(geometry)) |> 
   mutate(
     boundary_type = "isobath",
     boundary_name = "shoreline")
@@ -295,7 +299,7 @@ coastline <- st_read( here("rca-database/spatial_ref_files/all_shoreline_main_co
 ```{r}
 ### Alternatively we can generate custom lines, to have more exploratory capacity through this approach testing
 longitude_start = -130.36
-longitude_end = -117.36
+longitude_end = -110.36
 constant_latitude = 33.00
 horizontal_line = st_sfc(st_linestring(matrix(c(longitude_start, constant_latitude, longitude_end, constant_latitude), ncol = 2, byrow = TRUE)), crs = 4326)
 horizontal_line_sf <- st_sf(geometry = horizontal_line) %>%
@@ -327,7 +331,7 @@ selected_latitude_lines <- latitude_lines
 rca_coastline_polygons <- rca_lines_to_polygons(selected_longitude_lines, selected_latitude_lines)
 ```
 
-Exclude islands:
+Clip islands:
 
 ```{r}
 st_is_valid(rca_coastline_polygons)
@@ -362,18 +366,21 @@ We still have to figure out how to proceed when latitude lines cut an island sho
 ```{r}
 latitude_lines <- rbind() # reset 
 latitude_lines <- n_s_boundaries_sf %>% 
-  filter(boundary_name %in% c("34 27.00' N",
-                              "U.S. EEZ Boundary South"))
+  filter(boundary_name %in% c(#"U.S. EEZ Boundary South",
+                              "34 27.00' N"
+                              ))
 
-# latitude_lines <- rbind(horizontal_line_sf,latitude_lines)
+latitude_lines <- rbind(horizontal_line_sf,latitude_lines)
 
 # Select two lines from each object
 selected_longitude_lines <- rbind(longitude_lines[105, ], coastline)
 selected_latitude_lines <- latitude_lines
 ```
 
+Testing attaching latitude lines
 
 ```{r}
+
 # Clip RCA boundary lines based on latitude delimitation lines.
 ## Find min and max latitude values from latitude lines.
 coords = st_coordinates(st_geometry(selected_latitude_lines))
@@ -387,35 +394,145 @@ bbox <- st_as_sfc(st_bbox(c(xmin = -180, xmax = 180,
 clipped_lines <- st_intersection(selected_longitude_lines, bbox)
 print(clipped_lines)
 
-geom <- clipped_lines %>%
-  filter(boundary_name == "shoreline" & land_ref == "mainland") %>%
-  .$geometry
-   
-concatenate_shoreline <- function(geometry) {
-     coords <- st_coordinates(geometry)[,1:2]
-     linestring <- st_linestring(as.matrix(coords))
-     new_geom <- st_sfc(linestring, crs = 4326)
-    return(new_geom)
+MultilineFromIntersections <- function(lat_line, clipped_lines) {
+  # Perform intersection
+  coastline_intersect <- st_intersection(lat_line, clipped_lines)
+  
+  # Extract points from intersection geometries
+  all_points_list <- lapply(1:length(coastline_intersect$geometry), function(i) {
+    geom <- coastline_intersect$geometry[i]
+    # Extract coordinates depending on geometry type
+    coords <- st_coordinates(geom)
+    # Select only the X and Y columns
+    coords_df <- data.frame(X = coords[, "X"], Y = coords[, "Y"])
+    # Create an sf object of points for each geometry
+    st_as_sf(x = coords_df, coords = c("X", "Y"), crs = st_crs(coastline_intersect))
+  })
+  
+  # Combine all sf objects into one
+  points_sf <- do.call(rbind, all_points_list)
+  
+  # Sort points by longitude (X coordinate)
+  coords <- st_coordinates(points_sf)
+  sorted_coords <- coords[order(coords[, 'X']), ]
+  
+  # Recreate sorted points as an sf object
+  sorted_points_sf <- st_sf(geometry = st_sfc(lapply(1:nrow(sorted_coords), function(i) {
+    st_point(sorted_coords[i, ])
+  }), crs = st_crs(points_sf)))
+  
+  # Get updated coordinates after sorting
+  coords <- st_coordinates(sorted_points_sf)
+  
+  # Initialize an empty list for line segments
+  lines_list <- vector("list", length = nrow(sorted_points_sf) / 2)
+  
+  # Create LINESTRINGs from pairs of sorted points
+  for (i in seq(1, nrow(sorted_points_sf), by = 2)) {
+    if (i < nrow(sorted_points_sf)) {
+      lines_list[[i]] <- st_linestring(coords[i:(i+1), ])
+    }
+  }
+  
+  # Filter out any NULL elements
+  lines_list <- lines_list[!sapply(lines_list, is.null)]
+  
+  # Combine into a single MULTILINESTRING
+  multiline <- st_sfc(lines_list, crs = st_crs(points_sf))
+  
+  # Store the MULTILINESTRING in an sf object
+  multiline_sf <- st_sf(geometry = multiline)
+  
+  return(multiline_sf)
 }
 
-clipped_lines$geometry[clipped_lines$area_name == "shoreline" & clipped_lines$land_ref == "mainland"] <- concatenate_shoreline(geom)
-
-# Testing mainland 
-# IDEA: invert order every on stringlines on multistringlines
-
-testing_shore <- clipped_lines %>%
-  filter(boundary_name == "shoreline" & land_ref == "mainland")
-
-max_latitude
-# 
-result <- clipped_lines %>%
-  group_by(land_ref, area_name) %>%
-  summarize(geometry = concatenate_shoreline(geometry), .groups = "drop")
+lat_shorelines <- MultilineFromIntersections(selected_latitude_lines, clipped_lines)
 
 
+### Add to multilinestring mainland
+
+multilinestring <- st_union(lat_shorelines$geometry)
+
+target_geometry <- clipped_lines %>%
+  filter(area_name == "mainland" & land_ref == "mainland") %>%
+  .$geometry
+
+combined_geometry <- st_union(target_geometry, multilinestring)
+
+
+# Update the geometry in `selected_longitude_lines` with the combined geometry
+clipped_lines$geometry[clipped_lines$area_name == "mainland" & clipped_lines$land_ref == "mainland"] <- combined_geometry
+
+polygon <- st_combine(st_union(clipped_lines)) %>% 
+  st_polygonize() %>% 
+  st_collection_extract("POLYGON") %>% 
+  st_as_sf()
+
+## WORKING!
+## NOW EVALUATE INNER POLYGON EXCLUSION
+  
 leaflet() %>%
     addTiles() %>%
-    addPolylines(data = clipped_lines, color = "red")
+    addPolygons(data = polygon, color = "red", weight=1) %>% 
+    addPolylines(data = selected_latitude_lines, color = "blue", weight=2)
+
+```
+
+```{r}
+
+
+# intersection_points <- st_intersection(selected_latitude_lines,clipped_lines )
+# 
+# coords <- st_coordinates(coastline_intersect$geometry[1])
+# points_sf <- st_as_sf(x = data.frame(coords), coords = c("X", "Y"), crs = 4326)
+# 
+# points_only <- intersection_points[st_geometry_type(intersection_points) == "POINT", ]
+# coordinates <- st_coordinates(intersection_points)
+# # Check the result
+# print(intersection_points)
+# 
+# 
+# leaflet() %>%
+#   addTiles() %>%
+#   addPolylines(data = clipped_lines, color = "blue", weight=2) %>% 
+#   addPolylines(data = selected_latitude_lines, color = "red", weight=2) %>% 
+#   addCircleMarkers(data = points_sf, color = "red", radius = 3, fillOpacity = 1.0, stroke = FALSE)
+# 
+# 
+# 
+# geom <- clipped_lines %>%
+#   filter(boundary_name == "shoreline" & land_ref == "mainland") %>%
+#   .$geometry
+# 
+# coords <- st_coordinates(geom)
+#      linestring <- st_linestring(as.matrix(coords))
+#      new_geom <- st_sfc(linestring, crs = 4326)
+# 
+# concatenate_shoreline <- function(geometry) {
+#      coords <- st_coordinates(geometry)[,1:2]
+#      linestring <- st_linestring(as.matrix(coords))
+#      new_geom <- st_sfc(linestring, crs = 4326)
+#     return(new_geom)
+# }
+# 
+# clipped_lines$geometry[clipped_lines$area_name == "shoreline" & clipped_lines$land_ref == "mainland"] <- concatenate_shoreline(geom)
+
+# Testing mainland 
+# IDEA: invert order every other stringlines on multistringlines
+
+# testing_shore <- clipped_lines %>%
+#   filter(boundary_name == "shoreline" & land_ref == "mainland")
+# 
+# max_latitude
+# # 
+# result <- clipped_lines %>%
+#   group_by(land_ref, area_name) %>%
+#   summarize(geometry = concatenate_shoreline(geometry), .groups = "drop")
+# 
+# 
+# leaflet() %>%
+#     addTiles() %>%
+#     addPolylines(data = clipped_lines, color = "red")
 
 # NOTE: depending on the region the previous clip can generate MULTILINESTRING, instead of simple LINESTRING. This is due, for example, to the existence of islands.
 
@@ -518,11 +635,11 @@ polygon_sf <- st_sf(data.frame(id = 1:length(polygons)), geometry = polygons)
 print(polygon_sf)
 
 # Visualize in leaflet to explore result
-leaflet() %>%
-  addTiles() %>%
-  addPolygons(data = polygon_sf, color = "red") %>% 
-  addPolylines(data = expanded_clipped_lines, color = "blue") %>% 
-  addPolylines(data = selected_latitude_lines, color = "orange")
+ leaflet() %>%
+    addTiles() %>%
+    addPolygons(data = polygon_sf, color = "red", weight=1) %>% 
+    addPolylines(data = expanded_clipped_lines, color = "blue", weight=2) %>% 
+     addPolylines(data = selected_latitude_lines, color = "orange",weight=2)
 ```
 
 
