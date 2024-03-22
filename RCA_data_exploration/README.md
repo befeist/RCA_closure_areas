@@ -5,6 +5,7 @@ This folder in the repository contains the scripts associated with generating RC
 # Repository Structure 
 
 The code in this folder uses the following structure to read in files. The folders and read in files are stored on Ruttenberg et al collaboration's folder in DRIVE. 
+
 ```
 RCA_data_exploration
   |__ Ruttenberg et al collaboration
