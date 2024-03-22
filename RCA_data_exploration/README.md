@@ -14,5 +14,10 @@ RCA_data_exploration
     |__ revised-sp
     |__ spatial_ref_lines
   |__ scripts
+  |__ outputs
 
 ```
+
+- *Ruttenberg et al collaboration* folder and subfolders is not available in the repository, it has to be retrieved from the DRIVE.
+- *scripts* folder contains Cullen's code to generate the objects for the polygons creation.
+- *outputs* contain any results generated and stored from the code. So far it only contains the xlsx with the list of incorrect lines.
