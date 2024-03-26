@@ -432,6 +432,70 @@ As a first step, we separated the coastline from the rest of the EEZ and tested 
 
 *Note: The shoreline files mentioned are stored in the 'spatial_ref_files' folder inside the 'Ruttenberg et al collaboration' directory in the DRIVE, and were generated from the original EEZ file included in polygonize.qmd using QGIS. These files were created by removing nodes not pertaining to the shoreline, such as the exterior EEZ border and the U.S. maritime border with Canada and Mexico. Several files with distinct features were created and stored as geojson.*
 
+## Lines from NOAA
+
+Lines facilitated by CalPoly are approved by NOAA, therefore we have decided to use them for the polygon generation instead of the previous ones. These lines where generated upt o 2022. For the rest we should use the original procedure.
+
+```{r}
+
+# Read the feature class
+feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
+
+# Check the first few records to confirm
+names(feature_class)
+
+```
+
+
+```{r}
+# Use a regular expression to extract the date part (mmddyy) from the filenames
+date_strings <- sub(".*_(\\d{4}\\d{2}).csv$", "\\1", feature_class$CoordFileName)
+
+# Convert the extracted strings to date objects
+# Note: The dates are in the format mmddyy, so we use the format "%m%d%y"
+dates <- as.Date(date_strings, format = "%m%d%y")
+standard_dates <- format(dates, "%Y-%m-%d")
+
+min(na.omit(standard_dates))
+max(na.omit(standard_dates))
+```
+
+We can see that the RCA lines available range from "2002-09-10" to "2021-03-16". Any date onwards will have to be generated from the original .csv files.
+
+Now lets select only those objects corresponding to the longitude boundary lines (i.e., isobaths related)
+
+```{r}
+head(unique(feature_class$CoordFileName))
+
+isolines <- feature_class %>% 
+  filter(CoordFileName != "NA" & CoordFileName != "")
+
+head(unique(isolines$CoordFileName))
+```
+
+It seems that for each unique CoordFileName there are several lines. Let's explore that.
+
+```{r}
+count_rows <- isolines %>%
+  group_by(CoordFileName) %>%
+  summarise(Count = n()) %>% 
+  arrange(Count)
+
+count_rows
+```
+
+explore in more detail an example line in QGIS
+```{r}
+isolines_selection <- isolines %>% 
+  filter(CoordFileName == "10fm_010107.csv")
+
+st_write(isolines_selection, here("RCA_data_exploration/line_shapefile.shp"))
+```
+
+After exploring it seems that each isoline is constituted by several segments. We'll have to potentially st_combine the lines. 
+
+
+
 
 
 

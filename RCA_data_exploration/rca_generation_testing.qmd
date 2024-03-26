@@ -1,0 +1,138 @@
+---
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# New approach for RCA polygon creation
+
+## Setup
+
+```{r}
+if (!require(librarian,quietly = T)){
+  install.packages('librarian')
+}
+
+librarian::shelf(
+  here,
+  # plotly,
+  readxl,
+  tidyverse,
+  lubridate,
+  data.table,
+  openxlsx,
+  terra,
+  leaflet,
+  sf,
+  openxlsx,
+  rnaturalearth, 
+  rnaturalearthdata,
+  # foreach,
+  # doParallel,
+  iterators,
+  quiet = T
+)
+
+sf_use_s2(FALSE)
+```
+
+```{r}
+# Read in data using script (this helps keeping tidy the qmd)
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v3.R"))
+source(here("RCA_data_exploration/scripts/generate_rca_objects.R"))
+```
+
+# Testing for constant longitude lines
+
+```{r}
+# Update isolines form CalPoly gdb
+feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
+isolines <- feature_class %>% 
+  filter(CoordFileName != "NA" & CoordFileName != "")
+
+split_isolines <- split(isolines, isolines$CoordFileName)
+
+# function to apply the transformation
+transform_isolines <- function(df) {
+  df %>%
+    st_combine() %>%
+    st_as_sf() %>%
+    st_set_geometry("geometry") %>%
+    mutate(
+      boundary_type = "isobath",
+      boundary_name = first(df$CoordFileName),
+      area_name = "not_defined",
+      land_ref = "bathymetry",
+      .before = geometry
+    )
+}
+
+# Apply the transformation to each split dataframe and combine the results
+new_isolines <- map_dfr(split_isolines, transform_isolines)
+
+isolines_testing <- new_isolines %>% 
+  filter(boundary_name == "150fm_012703.csv")
+
+selected_longitude_lines <- rbind(isolines_testing, coastline)
+```
+
+```{r}
+select_random_lat_boundaries <- function(data_frame) {
+  # Extract unique boundary names
+  unique_boundaries <- unique(data_frame$boundary_name)
+  # Ensure that there are at least 2 unique boundaries to select from
+  if(length(unique_boundaries) < 2) {
+    stop("Not enough unique boundary names to select two random, non-equal values.")
+  }
+  # Randomly select two non-equal boundary names
+  selected_boundaries <- sample(unique_boundaries, 2)
+  # Filter rows that match the randomly selected boundary names
+  selected_rows <- data_frame %>% 
+    filter(boundary_name %in% selected_boundaries)
+  return(selected_rows)
+}
+
+selected_latitude_lines <- select_random_lat_boundaries(n_s_boundaries_sf)
+
+
+testing_poly <- rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
+```
+
+
+1. Selecting inner polygons based on area can lead to issues in regions where land areas exceed water areas, particularly when the shoreline acts as a boundary. This situation is notable in Oregon, where large estuaries can cause the polygon generation process to incorrectly focus on land areas. For instance, for the file "150fm_012703.csv," the latitude limits of "43 20.83' N" and "46 16.00' N" exemplify this issue. Additional examples include the latitudinal ranges "42 40.50' N" to "45 46.00' N".
+
+2. The execution of the random polygon generation script show further anomalies in shapes. However, these are likely due to the absence of a longitudinal lines at certain latitudes.
+
+# Testing with all random lines
+
+```{r}
+select_random_lon_boundaries <- function(data_frame) {
+  # Extract unique boundary names
+  unique_boundaries <- unique(data_frame$boundary_name)
+  # Ensure that there are at least 2 unique boundaries to select from
+  if(length(unique_boundaries) < 2) {
+    stop("Not enough unique boundary names to select two random, non-equal values.")
+  }
+  # Randomly select two non-equal boundary names
+  selected_boundaries <- sample(unique_boundaries, 2)
+  # Filter rows that match the randomly selected boundary names
+  selected_rows <- data_frame %>% 
+    filter(boundary_name %in% selected_boundaries)
+  return(selected_rows)
+}
+
+selected_longitude_lines <- select_random_lon_boundaries(new_isolines)
+selected_latitude_lines <- select_random_lat_boundaries(n_s_boundaries_sf)
+
+
+testing_poly <- rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
+```
+
+boundary_type    boundary_name
+1       isobath 100fm_030104.csv
+2       isobath 150fm_010105.csv
+
+U.S. EEZ Boundary South U.S. EEZ Boundary South 
+36 00.00' N             36 00.00' N                       
+
+For the above was detected that the islands are not clipped out if shoreline is not part of the boundary. Update that.
