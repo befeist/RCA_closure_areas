@@ -184,7 +184,7 @@ for (i in unique(rca_lines_sf$boundary_name)) {
 
 ## Self-intersections (points out of order)
 
-The table below includes all RCA lines that, extracted from the CSV files coordinates, present some points out of order. Thus, resulting in incorrect shapes. Scroll down to see all the lines.
+The table below includes all RCA lines based on the csv files with coordinates that contain at least one point that is out of order. These result in self-intersecting lines that in turn produce incorrect shapes. Scroll down to see all the lines.
 
 ```{r, echo = FALSE}
 # Display the resulting dataframe
@@ -192,7 +192,7 @@ kable(lines_check_df) %>%
   kable_styling("striped") %>% scroll_box(width = "100%",height = "400px")
 ```
 
-The maps below show the lines with self-intersections in blue, zooming in on the areas where these intersections occur. These are compared with lines from Cal Poly approved by NOAA, which are displayed in orange.
+The maps below show the lines based on the csv files with self-intersections in blue. The pins represent the locations where the intersections occur. These are compared with lines NOAA lines (extracted from `Master_line_feature_source`), which are displayed in orange. Note that some of the NOAA lines also contain self-intersections.
 
 ```{r echo=FALSE}
 html <- list()
@@ -210,7 +210,7 @@ tagList(html)
 
 ## Points inland
 
-Here we determine whether some of the nodes are wrongly located inland. For this process, we have used shoreline intersection as a proxy. Therefore, a selected line does not necessarily mean it has a point on land, and visual inspection is required. Further, lines whose ending points were situated on land were discarded since line endings near the shore were seen to be relatively close to the coastline and should not substantially affect the definition of RCAs. Instead, they may be caused by a problem of shoreline resolution.
+Here we determine whether some of the nodes are overlap with land. For this process, we used shoreline intersection as a proxy. Therefore, a selected line does not necessarily mean it has a point on land, and visual inspection is required. Further, lines whose ending points were situated on land were discarded since line endings near the shore were seen to be relatively close to the coastline and should not substantially affect the definition of RCAs. Instead, they may be caused by a problem of shoreline resolution. The shoreline that we use here is based on the shoreline feature shared by NOAA, which the EEZ boundaries removed.
 
 ```{r, echo = FALSE, results = FALSE}
 coastline <- st_read( here(data_path,"/spatial_ref_files/mainland_shore.geojson")) |>
