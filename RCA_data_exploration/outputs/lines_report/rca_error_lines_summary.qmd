@@ -168,7 +168,7 @@ for (i in unique(rca_lines_sf$boundary_name)) {
                   opacity = 0, 
                   labels = "", 
                   colors = "transparent") %>% 
-        addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "CalPoly RCA line"))
+        addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "NOAA RCA line"))
       
       print(map_object)
       # Store map object in the list with map_title as the key
@@ -311,7 +311,7 @@ for (i in unique(rca_lines_sf$boundary_name)) {
                     opacity = 0, 
                     labels = "", 
                     colors = "transparent") %>% 
-          addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "CalPoly RCA line"))
+          addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "NOAA RCA line"))
         
         print(map_object)
         # Store map object in the list with map_title as the key
