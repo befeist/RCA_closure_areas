@@ -1,0 +1,355 @@
+
+---
+title: Incorrect RCA lines
+subtitle: NOAA summary
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, echo = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+if (!require(librarian,quietly = T)){
+  install.packages('librarian')
+}
+
+librarian::shelf(
+  here,
+  readxl,
+  tidyverse,
+  lubridate,
+  data.table,
+  openxlsx,
+  terra,
+  leaflet,
+  sf,
+  htmltools,
+  openxlsx,
+  knitr,
+  kableExtra,
+  quiet = T
+)
+
+sf_use_s2(FALSE)
+```
+
+```{r, echo = FALSE, results = FALSE}
+# Read in our lines from Cullen's methods
+# Read in data using script (this helps keeping tidy the qmd)
+source(here("RCA_data_exploration/scripts/generate_rca_lines.R"))
+```
+
+```{r, echo = FALSE, results = FALSE}
+# Read lines from CalPoly, approved by NOAA
+# Update isolines form CalPoly gdb
+feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
+names(feature_class)
+
+isolines <- feature_class %>% 
+  filter(CoordFileName != "NA" & CoordFileName != "")
+
+split_isolines <- split(isolines, isolines$CoordFileName)
+
+# function to apply the transformation
+transform_isolines <- function(df) {
+  df %>%
+    st_combine() %>%
+    st_as_sf() %>%
+    st_set_geometry("geometry") %>%
+    mutate(
+      boundary_type = "isobath",
+      boundary_name = first(df$CoordFileName),
+      area_name = "not_defined",
+      land_ref = "bathymetry",
+      .before = geometry
+    )
+}
+
+# Apply the transformation to each split dataframe and combine the results
+new_isolines <- map_dfr(split_isolines, transform_isolines)
+```
+
+```{r, echo = FALSE, results = FALSE}
+# Initialize an empty dataframe to store results
+lines_check_df <- data.frame(boundary_name = character(),
+                             area_name = character(),
+                             self_intersects = logical(),
+                             point_coord = character(),
+                             stringsAsFactors = FALSE)
+# Empty list to store map objects
+maps_list <- list() 
+# Create an empty sf object to store self-intersecting lines
+self_intersecting_lines_gpkg <- rbind()
+
+for (i in unique(rca_lines_sf$boundary_name)) {
+  # Filter lines by boundary name
+  line_vec <- rca_lines_sf %>%
+    filter(boundary_name == i)
+
+  for (j in unique(line_vec$area_name)) {
+    # Filter lines by boundary name
+    line_unique_vec <- line_vec %>%
+      filter(area_name == j)
+    # Self-intersection evaluation
+    ## Check each line for simplicity (i.e., it does not cross itself)
+    self_intersects <- !st_is_simple(line_unique_vec)
+    
+    # Append the results to the dataframe only if self_intersects is TRUE
+    if(self_intersects) {
+      self_intersecting_lines_gpkg <- rbind(self_intersecting_lines_gpkg, line_unique_vec)
+      # Find self-intersection point
+      ## Extract nodes' coordinates from line
+      line_coords <- st_coordinates(line_unique_vec)[,1:2]
+      ## Create individual lines from the coordinates
+      individual_lines <- vector("list", nrow(line_coords) - 1)
+      for(k in 1:(nrow(line_coords) - 1)) {
+        individual_lines[[k]] <- st_linestring(line_coords[k:(k+1), ])
+      }
+      ## Convert the list of lines into an sf object
+      individual_lines_sf <- st_sfc(individual_lines, crs = st_crs(line_unique_vec))
+      ## Find which individual lines cross
+      crosses <- suppressMessages(st_crosses(individual_lines_sf))
+      crossing_lines_indices <- which(sapply(crosses, length) > 0)
+      ## Create sf object from those lines
+      self_intersecting_lines <- individual_lines_sf[crossing_lines_indices] %>%
+        st_as_sf()
+      # Get intersection point coordinates
+      line_intersection <- suppressMessages(st_intersection(self_intersecting_lines))
+      points_only <- line_intersection[st_geometry_type(line_intersection) == "POINT", ]
+      intersection_coord <- st_coordinates(points_only)
+      
+      ## Check if intersection_coord contains multiple rows and store all
+      if (nrow(intersection_coord) > 1) {
+        # Store multiple sets of coordinates in separate brackets
+        lon_lat_pairs <- apply(intersection_coord, 1, function(row) {
+          paste0("(", row[1], " ", row[2], ")")
+        })
+        # Combine all lon_lat_pairs into a single string separated by commas
+        lon_lat <- paste(lon_lat_pairs, collapse = ",")
+      } else {
+        # Single set of coordinates
+        lon_lat <- paste("(", intersection_coord[1, 1], " ", intersection_coord[1, 2], ")", sep = "")
+      }
+      
+      lines_check_df <- rbind(lines_check_df,
+                              data.frame(
+                                boundary_name = i,
+                                area_name = j,
+                                self_intersects = self_intersects,
+                                point_coord = lon_lat
+                                ))
+      
+      # Represent line in a map
+      ## Calculate bounds for the self-intersecting lines to set map view so the map zooms to where the intersection is.
+      if(length(self_intersecting_lines) > 0) {
+        bounds <- st_bbox(self_intersecting_lines)
+        map_bounds <- matrix(c(bounds$xmin, bounds$ymin, bounds$xmax, bounds$ymax), nrow = 2)
+      } else {
+        bounds <- st_bbox(line_unique_vec)
+        map_bounds <- matrix(c(bounds$xmin, bounds$ymin, bounds$xmax, bounds$ymax), nrow = 2)
+      }
+      ## Set title to indicate with RCA is represented
+      map_title <- unique(line_unique_vec$boundary_name)[1]
+      ## Add equivalent CalPoly RCA line
+      line_calpoly_vec <- new_isolines %>%
+        filter(boundary_name == i)
+      ## Create the map
+      map_object <- leaflet() %>%
+        addProviderTiles(providers$OpenStreetMap) %>%
+        addPolylines(data = line_unique_vec, color = "blue", group = "emLab RCA line") %>%
+        addPolylines(data = line_calpoly_vec, color = "orange", group = "NOAA RCA line") %>%
+        addMarkers(data=points_only, group = "Intersections") %>% 
+        fitBounds(lng1 = map_bounds[1,1], lat1 = map_bounds[2,1], 
+                  lng2 = map_bounds[1,2], lat2 = map_bounds[2,2]) %>%
+        addLegend(position = "topright", 
+                  title = map_title, 
+                  opacity = 0, 
+                  labels = "", 
+                  colors = "transparent") %>% 
+        addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "CalPoly RCA line"))
+      
+      print(map_object)
+      # Store map object in the list with map_title as the key
+      maps_list[[map_title]] <- map_object
+      
+      st_write(self_intersecting_lines_gpkg %>% 
+                 mutate(self_intersects = "TRUE")
+                 , "self_intersecting_lines.gpkg", driver = "GPKG",append = FALSE)
+    }
+  }
+}
+```
+
+## Self-intersections (points out of order)
+
+The table below includes all RCA lines that, extracted from the CSV files coordinates, present some points out of order. Thus, resulting in incorrect shapes. Scroll down to see all the lines.
+
+```{r, echo = FALSE}
+# Display the resulting dataframe
+kable(lines_check_df) %>%
+  kable_styling("striped") %>% scroll_box(width = "100%",height = "400px")
+```
+
+The maps below show the lines with self-intersections in blue, zooming in on the areas where these intersections occur. These are compared with lines from Cal Poly approved by NOAA, which are displayed in orange.
+
+```{r echo=FALSE}
+html <- list()
+for (i in 1:length(maps_list)) {
+  html <- c(html, 
+            list(h4(paste0("Map corresponding to RCA line ", names(maps_list)[i])),
+                 maps_list[i]  
+                 )
+            )
+}
+tagList(html)
+
+```
+
+
+## Points inland
+
+Here we determine whether some of the nodes are wrongly located inland. For this process, we have used shoreline intersection as a proxy. Therefore, a selected line does not necessarily mean it has a point on land, and visual inspection is required. Further, lines whose ending points were situated on land were discarded since line endings near the shore were seen to be relatively close to the coastline and should not substantially affect the definition of RCAs. Instead, they may be caused by a problem of shoreline resolution.
+
+```{r, echo = FALSE, results = FALSE}
+coastline <- st_read( here(data_path,"/spatial_ref_files/mainland_shore.geojson")) |>
+  sf::st_as_sf() |>
+  tidyr::replace_na(replace = list(Name = "Shoreline")) |>
+  dplyr::group_by(AreaType) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |>
+  dplyr::mutate(
+    boundary_type = "isobath",
+    boundary_name = "shoreline",
+    area_name = "shoreline",
+    land_ref = ifelse(AreaType == "islands", "islands", "mainland")) |>
+  dplyr::select(boundary_type, boundary_name, area_name, land_ref, geometry)
+```
+
+```{r, echo = FALSE, results = FALSE}
+# Initialize an empty dataframe to store results
+lines_check_df2 <- data.frame(boundary_name = character(),
+                              area_name = character(),
+                              land_point = logical(),
+                              lon_lat =character(),
+                              stringsAsFactors = FALSE
+                              )
+maps_list2 <- list() 
+
+for (i in unique(rca_lines_sf$boundary_name)) {
+  # Filter lines by boundary name
+  line_vec <- rca_lines_sf %>%
+    filter(boundary_name == i)
+
+  for (j in unique(line_vec$area_name)) {
+    # Filter lines by boundary name
+    line_unique_vec <- line_vec %>%
+      filter(area_name == j)
+    # Shoreline evaluation
+    ## Check for intersections between the line and the shoreline
+    intersections_with_shoreline <- suppressMessages(st_intersects(line_unique_vec, coastline))
+    any_intersections_with_shoreline <- any(lengths(intersections_with_shoreline)>0)
+    # Append the results to the dataframe
+    if(any_intersections_with_shoreline) {
+      
+      # Exclude lines where intersection only generates one point (i.e., the point inland is in the ends line which does not substantially affects the RCA definition)
+      line_intersection <- st_intersection(line_unique_vec,coastline)
+      coords <- st_coordinates(line_intersection)[,1:2]
+      points_sf <- NULL
+      if (!is.null(dim(coords))) {
+        for(k in 1:nrow(coords)) {
+        point_sf <- st_point(as.numeric(coords[k,])) %>% st_sfc() %>% st_sf()
+        points_sf <- bind_rows(points_sf, point_sf)
+        }
+        
+        intersection_coord <- st_coordinates(points_sf)
+      
+        ## Check if intersection_coord contains multiple rows and store all
+        if (nrow(intersection_coord) > 1) {
+          # Store multiple sets of coordinates in separate brackets
+          lon_lat_pairs <- apply(intersection_coord, 1, function(row) {
+            paste0("(", row[1], " ", row[2], ")")
+          })
+          # Combine all lon_lat_pairs into a single string separated by commas
+          lon_lat <- paste(lon_lat_pairs, collapse = ",")
+        } else {
+          # Single set of coordinates
+          lon_lat <- paste("(", intersection_coord[1, 1], " ", intersection_coord[1, 2], ")", sep = "")
+        }
+  
+        lines_check_df2 <- rbind(lines_check_df2,
+                                data.frame(
+                                boundary_name = i,
+                                area_name = j,
+                                land_point = any_intersections_with_shoreline,
+                                lon_lat = lon_lat)
+                                )
+        
+        # Represent line in a map
+        ## Calculate bounds for the self-intersecting lines to set map view so the map zooms to where the intersection is.
+        if(length(points_sf) > 0) {
+          bounds <- st_bbox(points_sf)
+          map_bounds <- matrix(c(bounds$xmin, bounds$ymin, bounds$xmax, bounds$ymax), nrow = 2)
+        } else {
+          bounds <- st_bbox(line_unique_vec)
+          map_bounds <- matrix(c(bounds$xmin, bounds$ymin, bounds$xmax, bounds$ymax), nrow = 2)
+        }
+        ## Set title to indicate with RCA is represented
+        map_title <- unique(line_unique_vec$boundary_name)[1]
+        ## Add equivalent CalPoly RCA line
+        line_calpoly_vec <- new_isolines %>%
+          filter(boundary_name == i)
+        ## Create the map
+        map_object <- leaflet() %>%
+          addProviderTiles(providers$OpenStreetMap) %>%
+          addPolylines(data = line_unique_vec, color = "blue", group = "emLab RCA line") %>%
+          addPolylines(data = line_calpoly_vec, color = "orange", group = "NOAA RCA line") %>%
+          fitBounds(lng1 = map_bounds[1,1], lat1 = map_bounds[2,1], 
+                    lng2 = map_bounds[1,2], lat2 = map_bounds[2,2]) %>%
+          addLegend(position = "topright", 
+                    title = map_title, 
+                    opacity = 0, 
+                    labels = "", 
+                    colors = "transparent") %>% 
+          addLayersControl(overlayGroups = c("Intersections", "emLab RCA line", "CalPoly RCA line"))
+        
+        print(map_object)
+        # Store map object in the list with map_title as the key
+        maps_list2[[map_title]] <- map_object
+      }
+   
+      
+    }
+  }
+}
+
+# Display the resulting dataframe
+head(lines_check_df2)
+```
+
+As seen in the table and maps below, the only line affected by points located on land is `60fm_010104.csv`. Zooming out reveals that a node is located north of Ventura. As for `75fm_012703.csv`, the script detected it only due to the shoreline intersection proxy, as the incorrect shape previously identified crosses land areas.
+
+```{r, echo = FALSE}
+# Display the resulting dataframe
+kable(lines_check_df2) %>%
+  kable_styling("striped") %>% scroll_box(width = "100%",height = "400px")
+```
+
+```{r, echo = FALSE}
+html <- list()
+for (i in 1:length(maps_list2)) {
+  html <- c(html, 
+            list(h4(paste0("Map corresponding to RCA line ", names(maps_list2)[i])),
+                 maps_list2[i]  
+                 )
+            )
+}
+tagList(html)
+```
+
+
+
+
+
+
+

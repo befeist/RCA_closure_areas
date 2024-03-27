@@ -436,20 +436,40 @@ As a first step, we separated the coastline from the rest of the EEZ and tested 
 
 Lines facilitated by CalPoly are approved by NOAA, therefore we have decided to use them for the polygon generation instead of the previous ones. These lines where generated upt o 2022. For the rest we should use the original procedure.
 
+
 ```{r}
-
-# Read the feature class
+# Update isolines form CalPoly gdb
 feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
-
-# Check the first few records to confirm
 names(feature_class)
 
+isolines <- feature_class %>% 
+  filter(CoordFileName != "NA" & CoordFileName != "")
+
+split_isolines <- split(isolines, isolines$CoordFileName)
+
+# function to apply the transformation
+transform_isolines <- function(df) {
+  df %>%
+    st_combine() %>%
+    st_as_sf() %>%
+    st_set_geometry("geometry") %>%
+    mutate(
+      boundary_type = "isobath",
+      boundary_name = first(df$CoordFileName),
+      area_name = "not_defined",
+      land_ref = "bathymetry",
+      .before = geometry
+    )
+}
+
+# Apply the transformation to each split dataframe and combine the results
+new_isolines <- map_dfr(split_isolines, transform_isolines)
 ```
 
 
 ```{r}
 # Use a regular expression to extract the date part (mmddyy) from the filenames
-date_strings <- sub(".*_(\\d{4}\\d{2}).csv$", "\\1", feature_class$CoordFileName)
+date_strings <- sub(".*_(\\d{4}\\d{2}).csv$", "\\1", new_isolines$boundary_name)
 
 # Convert the extracted strings to date objects
 # Note: The dates are in the format mmddyy, so we use the format "%m%d%y"
@@ -465,19 +485,14 @@ We can see that the RCA lines available range from "2002-09-10" to "2021-03-16".
 Now lets select only those objects corresponding to the longitude boundary lines (i.e., isobaths related)
 
 ```{r}
-head(unique(feature_class$CoordFileName))
-
-isolines <- feature_class %>% 
-  filter(CoordFileName != "NA" & CoordFileName != "")
-
-head(unique(isolines$CoordFileName))
+unique(new_isolines$boundary_name)
 ```
 
 It seems that for each unique CoordFileName there are several lines. Let's explore that.
 
 ```{r}
-count_rows <- isolines %>%
-  group_by(CoordFileName) %>%
+count_rows <- new_isolines %>%
+  group_by(boundary_name) %>%
   summarise(Count = n()) %>% 
   arrange(Count)
 
@@ -486,8 +501,8 @@ count_rows
 
 explore in more detail an example line in QGIS
 ```{r}
-isolines_selection <- isolines %>% 
-  filter(CoordFileName == "10fm_010107.csv")
+isolines_selection <- new_isolines %>% 
+  filter(boundary_name == "10fm_010107.csv")
 
 st_write(isolines_selection, here("RCA_data_exploration/line_shapefile.shp"))
 ```
