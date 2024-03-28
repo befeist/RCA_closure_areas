@@ -136,3 +136,118 @@ U.S. EEZ Boundary South U.S. EEZ Boundary South
 36 00.00' N             36 00.00' N                       
 
 For the above was detected that the islands are not clipped out if shoreline is not part of the boundary. Update that.
+
+
+## Run for a subset of RCA areas
+
+```{r}
+head(polygon_df_orig)
+test_sample <- polygon_df_orig[1:5,]
+
+rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
+
+
+
+```
+
+create instructions df based on cullens code
+
+```{r}
+selected_longitude_lines
+
+## Create clean data frame of polygon metadata
+polygon_instructions_df <- polygon_df_orig  %>% 
+  dplyr::select(-completed)  %>% 
+  dplyr::filter(shoreward_boundary != "N/A")  %>% 
+  dplyr::mutate(
+    shoreward_boundary = gsub("^0 fm \\(([^)]+)\\)$", "\\1", shoreward_boundary),
+    southern_boundary = ifelse(southern_boundary == "U.S. EEZ Boundary", 
+                               "U.S. EEZ Boundary South", 
+                               southern_boundary),
+    northern_boundary = ifelse(northern_boundary == "U.S. EEZ Boundary", 
+                               "U.S. EEZ Boundary North", 
+                               northern_boundary)) %>% 
+  rename( lat_boundary1 = northern_boundary,
+          lat_boundary2 = southern_boundary,
+          lon_boundary1 = shoreward_boundary,
+          lon_boundary2 = seaward_boundary)
+  
+
+```
+
+
+```{r}
+unique(polygon_instructions_df$shoreward_boundary)
+unique(polygon_instructions_df$seaward_boundary)
+unique(polygon_instructions_df$southern_boundary)
+unique(polygon_instructions_df$northern_boundary)
+```
+
+```{r}
+head(new_isolines)
+head(coastline)
+
+coastline <- st_transform(coastline, st_crs(new_isolines))
+n_s_boundaries_sf <- st_transform(n_s_boundaries_sf, st_crs(new_isolines))
+
+
+lon_boundary <- coastline %>% 
+  mutate(boundary_name = ifelse(boundary_name == "shoreline",
+                                "Shoreline",
+                                boundary_name)) %>% 
+  rbind(new_isolines)
+  
+lat_boundary <- n_s_boundaries_sf
+```
+
+```{r}
+head(polygon_instructions_df)
+intructions_sample <- polygon_instructions_df[1:5,]
+
+```
+
+```{r}
+# Initialize list to store results
+results <- list()
+
+i=1
+for (i in 1:nrow(intructions_sample)) {
+    # For each row in intructions_sample, extract the boundary names
+    lat_boundary1_name <- intructions_sample$lat_boundary1[i]
+    lat_boundary2_name <- intructions_sample$lat_boundary2[i]
+
+    lon_boundary1_name <- intructions_sample$lon_boundary1[i]
+    lon_boundary2_name <- intructions_sample$lon_boundary2[i] 
+
+    # Select latitude lines
+    selected_latitude_lines <- lat_boundary[lat_boundary$boundary_name == lat_boundary1_name, ] %>% 
+      rbind(lat_boundary[lat_boundary$boundary_name == lat_boundary2_name, ])
+    
+    # Select longitude lines
+    selected_longitude_lines <- lon_boundary[lon_boundary$boundary_name == lon_boundary1_name, ] %>% 
+      rbind(lon_boundary[lon_boundary$boundary_name == lon_boundary2_name, ])
+    
+    leaflet() %>%
+      addTiles() %>%
+      addPolylines(data = selected_longitude_lines, color = "red", weight=2) %>% 
+      addPolylines(data = selected_latitude_lines, color = "blue", weight=2)
+    
+    # Process the selected lines to create polygons
+    result <- rca_lines_to_polygons_v3(selected_longitude_lines, selected_latitude_lines)
+    
+    # Combine polygons into a multipolygons and assign the instructions df variable levels
+    combined_sf <- result %>% 
+      st_combine() %>% 
+      st_sf() %>% 
+      cbind(intructions_sample[i,])
+    
+    # Store each result in the results list
+    results[[i]] <- combined_sf
+}
+
+```
+
+```{r}
+
+```
+
