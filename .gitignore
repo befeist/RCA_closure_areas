@@ -39,4 +39,5 @@ Thumbs.db
 
 ## additional ignores from pcarbomestre branch
 Ruttenberg\ et\ al\ collaboration/
-
+rca_poly/
+*.gpkg

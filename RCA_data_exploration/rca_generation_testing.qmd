@@ -17,6 +17,7 @@ librarian::shelf(
   here,
   # plotly,
   readxl,
+  glue,
   tidyverse,
   lubridate,
   data.table,
@@ -38,13 +39,26 @@ sf_use_s2(FALSE)
 
 ```{r}
 # Read in data using script (this helps keeping tidy the qmd)
-source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v3.R"))
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.R"))
 source(here("RCA_data_exploration/scripts/generate_rca_objects.R"))
 ```
 
 # Testing for constant longitude lines
 
 ```{r}
+eez_poly <-  st_read(here("RCA_data_exploration", "Ruttenberg et al collaboration", "spatial_ref_files", "eez.geojson"))
+
+# The new approach considers the coastline independently than the EEZ
+coastline <- st_read( here(data_path,"spatial_ref_files/all_shoreline_main_comb.geojson")) %>% 
+  rename(
+    land_ref = area_name,
+    area_name = AreaType_2) %>% 
+  mutate(
+    boundary_type = "isobath",
+    boundary_name = "shoreline")
+
+
+
 # Update isolines form CalPoly gdb
 feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
 isolines <- feature_class %>% 
@@ -95,7 +109,7 @@ select_random_lat_boundaries <- function(data_frame) {
 selected_latitude_lines <- select_random_lat_boundaries(n_s_boundaries_sf)
 
 
-testing_poly <- rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
+testing_poly <- rca_lines_to_polygons_v4(selected_longitude_lines,selected_latitude_lines,eez_poly)
 ```
 
 
@@ -153,7 +167,7 @@ rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
 create instructions df based on cullens code
 
 ```{r}
-selected_longitude_lines
+
 
 ## Create clean data frame of polygon metadata
 polygon_instructions_df <- polygon_df_orig  %>% 
@@ -166,21 +180,36 @@ polygon_instructions_df <- polygon_df_orig  %>%
                                southern_boundary),
     northern_boundary = ifelse(northern_boundary == "U.S. EEZ Boundary", 
                                "U.S. EEZ Boundary North", 
+                               northern_boundary),
+    northern_boundary = ifelse(northern_boundary == "U.S. EEZ boundary", 
+                               "U.S. EEZ Boundary North", 
                                northern_boundary)) %>% 
   rename( lat_boundary1 = northern_boundary,
           lat_boundary2 = southern_boundary,
           lon_boundary1 = shoreward_boundary,
           lon_boundary2 = seaward_boundary)
+
+
+# If we check the latitude variables levels we see an error where "45 46.00'N" should be "45 46.00' N"
+unique(polygon_instructions_df$lat_boundary2)
+# update "45 46.00'N" to "45 46.00' N"
+polygon_instructions_df <- polygon_instructions_df %>% 
+  mutate(lat_boundary1 = ifelse(lat_boundary1 == "45 46.00'N",
+                                "45 46.00' N",
+                                lat_boundary1),
+         lat_boundary2 = ifelse(lat_boundary2 == "45 46.00'N",
+                                "45 46.00' N",
+                                lat_boundary2))
   
 
 ```
 
 
 ```{r}
-unique(polygon_instructions_df$shoreward_boundary)
-unique(polygon_instructions_df$seaward_boundary)
-unique(polygon_instructions_df$southern_boundary)
-unique(polygon_instructions_df$northern_boundary)
+unique(polygon_instructions_df$lat_boundary1)
+unique(polygon_instructions_df$lat_boundary2)
+unique(polygon_instructions_df$lon_boundary1)
+unique(polygon_instructions_df$lon_boundary2)
 ```
 
 ```{r}
@@ -198,6 +227,7 @@ lon_boundary <- coastline %>%
   rbind(new_isolines)
   
 lat_boundary <- n_s_boundaries_sf
+unique(n_s_boundaries_sf$boundary_name)
 ```
 
 ```{r}
@@ -207,10 +237,34 @@ intructions_sample <- polygon_instructions_df[1:5,]
 ```
 
 ```{r}
+intructions_sample <- polygon_instructions_df[1:100,]
+
+```
+
+
+## RUNNING except borders
+```{r}
+intructions_sample <- polygon_instructions_df %>% 
+  filter(lat_boundary1 != "U.S. EEZ Boundary North",
+         lat_boundary2 != "U.S. EEZ Boundary South")
+
+unique(intructions_sample$lat_boundary1)
+unique(intructions_sample$lat_boundary2)
+
+```
+
+```{r}
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v5.R"))
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.R"))
+
+```
+
+```{r}
 # Initialize list to store results
 results <- list()
+results_df <- data.frame(date = character(), area = character(), execution = logical(), stringsAsFactors = FALSE)
 
-i=1
+# i=1
 for (i in 1:nrow(intructions_sample)) {
     # For each row in intructions_sample, extract the boundary names
     lat_boundary1_name <- intructions_sample$lat_boundary1[i]
@@ -227,13 +281,31 @@ for (i in 1:nrow(intructions_sample)) {
     selected_longitude_lines <- lon_boundary[lon_boundary$boundary_name == lon_boundary1_name, ] %>% 
       rbind(lon_boundary[lon_boundary$boundary_name == lon_boundary2_name, ])
     
-    leaflet() %>%
-      addTiles() %>%
-      addPolylines(data = selected_longitude_lines, color = "red", weight=2) %>% 
-      addPolylines(data = selected_latitude_lines, color = "blue", weight=2)
-    
     # Process the selected lines to create polygons
-    result <- rca_lines_to_polygons_v3(selected_longitude_lines, selected_latitude_lines)
+    result <- suppressMessages(
+      rca_lines_to_polygons_v4(selected_longitude_lines, selected_latitude_lines,eez_poly)
+    )
+    
+    # Extracting boundary_name from each
+    boundary_name_longitude1 = selected_longitude_lines$boundary_name[1] 
+    boundary_name_longitude2 = selected_longitude_lines$boundary_name[2] 
+    boundary_name_latitude1 = selected_latitude_lines$boundary_name[1] 
+    boundary_name_latitude2 = selected_latitude_lines$boundary_name[2] 
+    
+    # Constructing the string with `glue`
+    final_string <- glue("{lon_boundary1_name}-{lon_boundary2_name}-{lat_boundary1_name}-{lat_boundary2_name}")
+    final_string <- gsub(" ", "", final_string)
+    
+    if (is.null(result) || all(st_is_empty(result))) {
+        execution_status <- "empty geometry"
+    } else {
+        execution_status <- "successful"
+    }
+    
+    print(paste0(as.character(intructions_sample$year_month[i]),"-", final_string, ": ",i,"/",nrow(intructions_sample),"...", execution_status))
+    # Append to the results dataframe
+    results_df <- rbind(results_df, data.frame(date = intructions_sample$year_month[i], area = final_string, execution = execution_status))
+    
     
     # Combine polygons into a multipolygons and assign the instructions df variable levels
     combined_sf <- result %>% 
@@ -245,9 +317,340 @@ for (i in 1:nrow(intructions_sample)) {
     results[[i]] <- combined_sf
 }
 
+
+table(results_df$execution)
+
+combined_results_sf <- do.call(rbind, results)
+
+st_write(combined_results_sf, here("RCA_data_exploration","outputs","rca_poly","rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
+
+leaflet() %>%
+    addTiles() %>%
+    addPolygons(data = unique_geometries_sf[1,], color = "red", weight=1) 
+
+
+```
+
+
+Extract unique polygons and eval polys with issues
+
+```{r}
+combined_results_sf$geometry_wkt <- st_as_text(combined_results_sf$geometry)
+
+# Use distinct() to filter out duplicates based on the WKT column
+unique_geometries_sf <- combined_results_sf %>%
+  distinct(geometry_wkt, .keep_all = TRUE) %>%
+  select(-geometry_wkt) 
+```
+```{r}
+unique_geometries_sf <- st_as_sf(unique_geometries_sf)
+st_write(unique_geometries_sf, here("RCA_data_exploration","outputs","rca_poly","unique_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
+```
+
+incorrect polys annotated in google doc
+
+
+```{r}
+unique_geometries_sf[104,] # solved
+unique_geometries_sf[89,] # solved
+unique_geometries_sf[98,] # solved
+unique_geometries_sf[97,]  # solved
+unique_geometries_sf[99,] # solved
+unique_geometries_sf[75,] # solved
+unique_geometries_sf[74,] # solved
+unique_geometries_sf[69,] # solved
+
+
+
+
+
 ```
 
 ```{r}
+intructions_sample <- unique_geometries_sf[104,] %>% 
+  as.data.frame() %>% 
+  select(!geometry)
 
+lat_boundary1_name <- intructions_sample$lat_boundary1
+lat_boundary2_name <- intructions_sample$lat_boundary2
+
+lon_boundary1_name <- intructions_sample$lon_boundary1
+lon_boundary2_name <- intructions_sample$lon_boundary2
+
+# Select latitude lines
+selected_latitude_lines <- lat_boundary[lat_boundary$boundary_name == lat_boundary1_name, ] %>% 
+rbind(lat_boundary[lat_boundary$boundary_name == lat_boundary2_name, ])
+
+# Select longitude lines
+selected_longitude_lines <- lon_boundary[lon_boundary$boundary_name == lon_boundary1_name, ] %>% 
+rbind(lon_boundary[lon_boundary$boundary_name == lon_boundary2_name, ])
+
+# Process the selected lines to create polygons
+result <- suppressMessages(
+rca_lines_to_polygons_v4(selected_longitude_lines, selected_latitude_lines,eez_poly)
+)
+
+
+```
+
+```{r}
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.2.R"))
+result <- suppressMessages(
+rca_lines_to_polygons_v4.2(selected_longitude_lines, selected_latitude_lines,eez_poly)
+)
+```
+
+```{r}
+longitude_lines <- selected_longitude_lines
+latitude_lines <- selected_latitude_lines
+
+  # Clip RCA boundary lines based on latitude delimitation lines.
+  ## Find min and max latitude values from latitude lines.
+  coords = st_coordinates(st_geometry(latitude_lines))
+  latitudes = coords[,2] # The latitude values are in the second column of 'coords'
+  min_latitude = min(latitudes)
+  max_latitude = max(latitudes)
+  ## Create a bbox that will intersect the RCA lines.
+  bbox <- st_as_sfc(st_bbox(c(xmin = -180, xmax = 180, 
+                              ymin = min_latitude, ymax = max_latitude), 
+                            crs = st_crs(longitude_lines)))
+  
+  # eez_poly <- st_polygonize(shoreline[2,]) %>% 
+  #   st_collection_extract("POLYGON")
+  
+  # difference <- st_intersection(eez_poly,bbox)
+  
+  clipped_lines <- st_intersection(longitude_lines, bbox)
+  
+  MultilineFromIntersections <- function(latitude_lines, clipped_lines) {
+    # Perform intersection
+    coastline_intersect <- st_intersection(latitude_lines, clipped_lines)
+    
+    # Extract points from intersection geometries
+    # print("Extracting points from intersection geometries")
+    extract_points <- function(coastline_intersect) {
+      # Extract points from intersection geometries
+      all_points_list <- lapply(1:length(coastline_intersect$geometry), function(i) {
+        geom <- coastline_intersect$geometry[i]
+        # Extract coordinates depending on geometry type
+        coords <- st_coordinates(geom)
+        # Select only the X and Y columns
+        coords_df <- data.frame(X = coords[, "X"], Y = coords[, "Y"])
+        # Create an sf object of points for each geometry
+        st_as_sf(x = coords_df, coords = c("X", "Y"), crs = st_crs(coastline_intersect))
+      })
+      
+      points_sf <- do.call(rbind, all_points_list)
+      return(points_sf)
+    }
+    
+    # Combine all sf objects into one
+    points_sf <- extract_points(coastline_intersect)
+    
+    # Evaluate cases where latitude borders are not intersected based on intersection points
+    # print("Evaluating lack of intersections")
+    
+    ## Extract latitudes
+    latitudes <- st_coordinates(points_sf)[,2]
+    
+    if (length(latitudes) %% 2 != 0 | !any(duplicated(latitudes))) {
+      lat_counts <- table(latitudes)
+      odd_even <- ifelse(lat_counts %% 2 == 1, "odd", "even")
+      unique_lats <- unique(latitudes)
+      ## Identify max and min latitude
+      max_lat <- max(unique_lats)
+      min_lat <- min(unique_lats)
+      ## Check if max and/or min latitude have odd occurrences
+      max_lat_odd <- odd_even[as.character(max_lat)] == "odd"
+      min_lat_odd <- odd_even[as.character(min_lat)] == "odd"
+      ## Get latitude border presenting the problem
+      find_matching_latitude_indices <- function(sf_object, latitude) {
+        
+        row_indices <- points_sf %>%
+          st_coordinates() %>%
+          {which(.[, "Y"] == latitude, arr.ind = TRUE)}
+        
+        point_to_fix <- points_sf[row_indices,]
+        
+        matching_indices <- st_intersects(st_buffer(point_to_fix, 1e-6),sf_object) %>% 
+          as.numeric()
+        
+        return(matching_indices)
+      }
+      
+      # Below we solve the intersection issue on the border presenting the problem by searching the
+      # nearest points between the lines
+      # print("Lack of intersections detected. Solving problem...")
+      process_latitude_lines <- function(latitude_lines, latitude) {
+        ## Selecting latitude line affected
+        matching_indices <- find_matching_latitude_indices(latitude_lines, latitude)
+        selected_row <- latitude_lines[matching_indices,]
+        ## Searching closest lines for all objects
+        nearest_points <- st_nearest_points(longitude_lines,selected_row) %>%
+          st_as_sf()
+        
+        lengths <- as.vector(st_length(nearest_points))
+        # Filter out zero-length lines
+        non_zero_lengths <- lengths[lengths > 0]
+        # Find the shortest non-zero length
+        shortest_non_zero_length <- min(non_zero_lengths)
+        # Find the index(es) of the LINESTRING(s) with the shortest non-zero length
+        shortest_index <- which(lengths == shortest_non_zero_length)
+        # Select the shortest non-zero length LINESTRING from the collection
+        shortest_line <- nearest_points[shortest_index, ]
+        
+        ## Add shortest line to our latitude line so intersection occurs
+        latitude_intersect <- selected_row %>%
+          st_union(shortest_line)
+        ## Update latitude lines
+        latitude_lines <- rbind(latitude_lines[-matching_indices,],
+                                latitude_intersect %>% st_cast("LINESTRING"))
+        return(latitude_lines)
+      }
+      
+    
+      
+      # Now, we will evaluate the affected latitude lines and apply the fuctions defined above
+      if (max_lat_odd & min_lat_odd) {
+        # Both the maximum and minimum latitudes have an odd number of points
+        updated_max_latitude_lines <- process_latitude_lines(latitude_lines, max_lat)
+        
+        is_max_lat_in_line <- function(line, max_lat) {
+          coords <- st_coordinates(line)
+          lat_min <- min(coords[,2])
+          lat_max <- max(coords[,2])
+          return(max_lat >= lat_min && max_lat <= lat_max)
+        }
+        
+        # Apply the function to filter rows
+        updated_max_latitude_lines_filtered <- updated_max_latitude_lines %>%
+          filter(sapply(geometry, is_max_lat_in_line, max_lat = max_lat))
+
+        
+        updated_min_latitude_lines <- process_latitude_lines(latitude_lines, min_lat)
+        
+        is_min_lat_in_line <- function(line, min_lat) {
+          coords <- st_coordinates(line)
+          lat_min <- min(coords[,2])
+          return(min_lat >= lat_min)
+        }
+        
+        # Apply the function to filter rows
+        updated_min_latitude_lines_filtered <- updated_min_latitude_lines %>%
+          filter(sapply(geometry, is_min_lat_in_line, min_lat = min_lat)) 
+        
+        updated_latitude_lines <- rbind(updated_min_latitude_lines_filtered,
+                                           updated_max_latitude_lines_filtered)
+        
+        ## Regenerate points_sf
+        coastline_intersect <- st_intersection(updated_latitude_lines, clipped_lines)
+        points_sf <- extract_points(coastline_intersect)
+
+        
+      } else if (max_lat_odd == TRUE & min_lat_odd == FALSE) { # The maximum latitude has an odd number of points
+        updated_latitude_lines <- process_latitude_lines(latitude_lines, max_lat)
+        ## Regenerate points_sf
+        coastline_intersect <- st_intersection(updated_latitude_lines, clipped_lines)
+        points_sf <- extract_points(coastline_intersect)
+        
+      } else if (min_lat_odd == TRUE & max_lat_odd == FALSE) { # The minimum latitude has an odd number of points.
+        updated_latitude_lines <- process_latitude_lines(latitude_lines, min_lat)
+        ## Regenerate points_sf
+        coastline_intersect <- st_intersection(updated_latitude_lines, clipped_lines)
+        points_sf <- extract_points(coastline_intersect)
+        
+      } else {
+        # Do nothing if both counts are even
+      }
+    }
+    
+    
+    # Once we have the intersection points in the latitude borders, we can transform them into lines
+    # print("Transforming points into lines")
+    ## Sort points by longitude to guaranty they construct according to the vertices to fill
+    coords <- st_coordinates(points_sf)
+    sorted_coords <- coords[order(coords[, 'X']), ]
+    sorted_coords <- sorted_coords[order(sorted_coords[, 'Y']), ] # Get X sorting by each latitude value
+    ## Recreate sorted points as an sf object
+    sorted_points_sf <- st_sf(geometry = st_sfc(lapply(1:nrow(sorted_coords), function(i) {
+      st_point(sorted_coords[i, ])
+    }), crs = st_crs(points_sf)))
+    ## Get updated coordinates after sorting
+    coords <- st_coordinates(sorted_points_sf)
+    ## Create LINESTRINGs from pairs of sorted points
+    lines_list <- vector("list", length = nrow(sorted_points_sf) / 2) # Initialize
+    for (i in seq(1, nrow(sorted_points_sf), by = 2)) {
+      if (i < nrow(sorted_points_sf)) {
+        lines_list[[i]] <- st_linestring(coords[i:(i+1), ])
+      }
+    }
+    lines_list <- lines_list[!sapply(lines_list, is.null)]  # Filter out any NULL elements
+    ## Combine into a single MULTILINESTRING
+    multiline <- st_sfc(lines_list, crs = st_crs(points_sf))
+    multiline_sf <- st_sf(geometry = multiline)
+    
+    return(multiline_sf)
+  }
+  
+  lat_shorelines <- MultilineFromIntersections(latitude_lines, clipped_lines)
+  # Create polygon from lines
+  # print("Creating polygons from lines")
+  ## Combine into a MULTILINESTRING
+  multilinestring <- st_union(lat_shorelines$geometry)
+  target_geometry <- clipped_lines %>%
+    # filter(area_name == "mainland" & land_ref == "mainland") %>%
+    .$geometry
+  combined_geometry <- st_union(target_geometry, multilinestring)
+  ## Update the geometry with the combined geometry
+  # clipped_lines$geometry[clipped_lines$area_name == "mainland" & clipped_lines$land_ref == "mainland"] <- combined_geometry
+  ## Polygonize the combined MULTILINESTRINGs
+  polygon_sf <- st_combine(st_union(combined_geometry)) %>% 
+    st_polygonize() %>% 
+    st_collection_extract("POLYGON") %>% 
+    st_as_sf() %>% 
+    rename(geometry = x) %>% 
+    mutate(id = row_number(),.before=geometry)
+  
+  # # Clip out any inner polygon
+  # print("First inner polygons clip out")
+  # # To do it we will evaluate relationships between polygons based on whether they intersect and then exclude the smaller polygons within those associations
+  # ## Get information on intersection polygons
+  # intersections <- st_intersects(polygon_sf, sparse = TRUE)
+  # ## Get areas
+  # print("1")
+  # areas <- st_area(polygon_sf)
+  # print("2")
+  # area_df <- data.frame(area = areas)
+  # print("3")
+  # 
+  # # area_df$id <- 1:nrow(area_df)
+  # area_df$id <- as.numeric(rownames(area_df))
+  # print("4")
+  # 
+  # keep_ids <- numeric()
+  # print("5")
+  # ## For each polygon, find the one with the biggest area among those it intersects with
+  # for (i in 1:length(intersections)) {
+  #   if(length(intersections[[i]]) > 0) {
+  #     # Find the intersecting polygons and their areas
+  #     intersecting_areas <- area_df[area_df$id %in% intersections[[i]], ]
+  #     # Find the polygon(s) with the maximum area
+  #     max_area_id <- intersecting_areas[which.max(intersecting_areas$area), "id"]
+  #     # Add to keep_ids
+  #     keep_ids <- unique(c(keep_ids, max_area_id))
+  #   }
+  # }
+  # print("6")
+  # ## Keep only the polygons with the largest area in their intersection groups
+  # rca_coastline_polygons_filtered <- polygon_sf[keep_ids, ]
+  
+  # print("Generating outputs")
+   leaflet() %>%
+     addTiles() %>%
+     addPolygons(data = polygon_sf, color = "red", weight=1) %>%
+     addPolylines(data = selected_latitude_lines, color = "blue", weight=2) %>%
+     addPolylines(data = clipped_lines, color = "orange", weight=2)
+
+ 
 ```
 
