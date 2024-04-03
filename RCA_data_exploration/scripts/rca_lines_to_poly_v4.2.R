@@ -258,12 +258,12 @@ rca_lines_to_polygons_v4.2 <- function(longitude_lines, latitude_lines,eez_poly)
   
   
   # print("Generating outputs")
-   map <- leaflet() %>%
-     addTiles() %>%
-     addPolygons(data = polygon_sf, color = "red", weight=1) %>%
-     addPolylines(data = selected_latitude_lines, color = "blue", weight=2) %>%
-     addPolylines(data = clipped_lines, color = "orange", weight=2)
-
-   print(map)
+   # map <- leaflet() %>%
+   #   addTiles() %>%
+   #   addPolygons(data = polygon_sf, color = "red", weight=1) %>%
+   #   addPolylines(data = selected_latitude_lines, color = "blue", weight=2) %>%
+   #   addPolylines(data = clipped_lines, color = "orange", weight=2)
+   # 
+   # print(map)
   return(polygon_sf)
 }

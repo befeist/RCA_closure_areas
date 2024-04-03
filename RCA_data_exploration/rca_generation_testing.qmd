@@ -43,7 +43,8 @@ source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.R"))
 source(here("RCA_data_exploration/scripts/generate_rca_objects.R"))
 ```
 
-# Testing for constant longitude lines
+# Functions testing
+## Testing for constant longitude lines
 
 ```{r}
 eez_poly <-  st_read(here("RCA_data_exploration", "Ruttenberg et al collaboration", "spatial_ref_files", "eez.geojson"))
@@ -117,7 +118,7 @@ testing_poly <- rca_lines_to_polygons_v4(selected_longitude_lines,selected_latit
 
 2. The execution of the random polygon generation script show further anomalies in shapes. However, these are likely due to the absence of a longitudinal lines at certain latitudes.
 
-# Testing with all random lines
+## Testing with all random lines
 
 ```{r}
 select_random_lon_boundaries <- function(data_frame) {
@@ -142,33 +143,72 @@ selected_latitude_lines <- select_random_lat_boundaries(n_s_boundaries_sf)
 testing_poly <- rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
 ```
 
-boundary_type    boundary_name
-1       isobath 100fm_030104.csv
-2       isobath 150fm_010105.csv
 
-U.S. EEZ Boundary South U.S. EEZ Boundary South 
-36 00.00' N             36 00.00' N                       
-
-For the above was detected that the islands are not clipped out if shoreline is not part of the boundary. Update that.
+After some testing we detected that the islands are not clipped out if shoreline is not part of the boundary. (e.g., 36 00.00' N - U.S. EEZ Boundary South - 100fm_030104.csv - 150fm_010105.csv).
 
 
-## Run for a subset of RCA areas
+# Function implementation
+
+## Input data
+
+Althought this was already done in the testing section, we will include the read in code for the main object to be evaluated here as well.
 
 ```{r}
-head(polygon_df_orig)
-test_sample <- polygon_df_orig[1:5,]
+source(here("RCA_data_exploration/scripts/generate_rca_objects.R"))
 
-rca_lines_to_polygons_v3(selected_longitude_lines,selected_latitude_lines)
+# EEZ polygon, though it will only be used in v5 of the fuction exclusively applyed to those polygons neighboring the EEZ
+eez_poly <-  st_read(here("RCA_data_exploration", "Ruttenberg et al collaboration", "spatial_ref_files", "eez.geojson"))
 
+# Coastline shape that will define the shoreline layer as an extra isoline. As described earlier, the new approach considers the coastline independently than the EEZ
+coastline <- st_read( here(data_path,"spatial_ref_files/all_shoreline_main_comb.geojson")) %>% 
+  rename(
+    land_ref = area_name,
+    area_name = AreaType_2) %>% 
+  mutate(
+    boundary_type = "isobath",
+    boundary_name = "shoreline") %>% 
+  mutate(boundary_name = ifelse(boundary_name == "shoreline", # Matching with instructiosn df
+                                "Shoreline",
+                                boundary_name)) 
 
+# RCA lines  form CalPoly gdb
+feature_class <- st_read(dsn = cal_poly_fp, layer = "Master_line_feature_source")
 
+isolines <- feature_class %>% 
+  filter(CoordFileName != "NA" & CoordFileName != "") 
+split_isolines <- split(isolines, isolines$CoordFileName)
+
+transform_isolines <- function(df) {
+  df %>%
+    st_combine() %>%
+    st_as_sf() %>%
+    st_set_geometry("geometry") %>%
+    mutate(
+      boundary_type = "isobath",
+      boundary_name = first(df$CoordFileName),
+      area_name = "not_defined",
+      land_ref = "bathymetry",
+      .before = geometry
+    )
+}
+
+new_isolines <- map_dfr(split_isolines, transform_isolines)
+
+# Combine coastline with isolines to have them all in a single object
+coastline <- st_transform(coastline, st_crs(new_isolines))
+lon_boundary <-  rbind(coastline,new_isolines)
+
+# Reference Cullen's sf with the latitudinal borders for each RCA
+n_s_boundaries_sf <- st_transform(n_s_boundaries_sf, st_crs(new_isolines))
+lat_boundary <- n_s_boundaries_sf
 ```
 
-create instructions df based on cullens code
+
+## Instructions dataframe
+
+First we will create instructions data frame based on Cullen's code. Some updates need to be made so the instructions df contents matches the ones from the sf objects. The instructiins files contains the characteristcs of each resulting polygon which are the RCA date plus the lines references that contains them.
 
 ```{r}
-
-
 ## Create clean data frame of polygon metadata
 polygon_instructions_df <- polygon_df_orig  %>% 
   dplyr::select(-completed)  %>% 
@@ -192,7 +232,7 @@ polygon_instructions_df <- polygon_df_orig  %>%
 
 # If we check the latitude variables levels we see an error where "45 46.00'N" should be "45 46.00' N"
 unique(polygon_instructions_df$lat_boundary2)
-# update "45 46.00'N" to "45 46.00' N"
+# Update "45 46.00'N" to "45 46.00' N"
 polygon_instructions_df <- polygon_instructions_df %>% 
   mutate(lat_boundary1 = ifelse(lat_boundary1 == "45 46.00'N",
                                 "45 46.00' N",
@@ -200,10 +240,9 @@ polygon_instructions_df <- polygon_instructions_df %>%
          lat_boundary2 = ifelse(lat_boundary2 == "45 46.00'N",
                                 "45 46.00' N",
                                 lat_boundary2))
-  
-
 ```
 
+Let's make sure the instructions contents are as we want.
 
 ```{r}
 unique(polygon_instructions_df$lat_boundary1)
@@ -212,51 +251,64 @@ unique(polygon_instructions_df$lon_boundary1)
 unique(polygon_instructions_df$lon_boundary2)
 ```
 
-```{r}
-head(new_isolines)
-head(coastline)
+## Running for inner RCA
 
-coastline <- st_transform(coastline, st_crs(new_isolines))
-n_s_boundaries_sf <- st_transform(n_s_boundaries_sf, st_crs(new_isolines))
+After some testing it has been seen that the problems associated with inner RCAs and those RCA neighboring the north and south limits of the EEZ are different, therefore two different function versions will be applied for each type of RCA.
 
+After an initial run using v4 we got some issues associated with the lack of code dealing with the "no contact with border points" occurring in both latitude borders. This generated errors for the unique lines generated (i.e., `unique_geometries_sf`) in v4, objects 74, 75, 89, 97, 98, 99, 104. The same v4 function also generated and empty geometry for object 69, which we will discuss further.
 
-lon_boundary <- coastline %>% 
-  mutate(boundary_name = ifelse(boundary_name == "shoreline",
-                                "Shoreline",
-                                boundary_name)) %>% 
-  rbind(new_isolines)
-  
-lat_boundary <- n_s_boundaries_sf
-unique(n_s_boundaries_sf$boundary_name)
+We fixed this in v4.2. However additional problems where detected. These are related to an anomaly detected northwest of San Francisco, in front of the Greater Farallones National Marine Sanctuary, for the line "100fm_010107.csv". This anomaly occurred in both NOAA lines and our generated lines. There is a section where the line splits into two. Upon inspecting the line in more detail using QGIS, we can observe that this shape is composed of several redundant vertices.
+
+```{r, echo = FALSE}
+source(here("RCA_data_exploration/scripts/generate_rca_lines.R"))
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "100fm_010107.csv")
+
+filtered_rca_noaa_lines_sf <- new_isolines %>%
+  filter(boundary_name == "100fm_010107.csv")
 ```
 
-```{r}
-head(polygon_instructions_df)
-intructions_sample <- polygon_instructions_df[1:5,]
-
+```{r, echo = FALSE}
+leaflet() %>%
+     addTiles() %>%
+     addPolylines(data = filtered_rca_noaa_lines_sf, color = "orange", weight=2, group = "NOAA RCA line") %>%
+     addPolylines(data = filtered_rca_lines_sf, color = "blue", weight=2, group = "emLab RCA line")%>%
+  fitBounds(lng1 = -123.57, lat1 = 38.14, 
+                    lng2 = -123.33, lat2 = 37.89) %>%
+          addLegend(position = "topright", 
+                    title = "100fm_010107.csv", 
+                    opacity = 0, 
+                    labels = "", 
+                    colors = "transparent") %>% 
+          addLayersControl(overlayGroups = c( "emLab RCA line", "NOAA RCA line"))
 ```
 
-```{r}
-intructions_sample <- polygon_instructions_df[1:100,]
+This is the cause of the 69 empty geometry and caused additional anomalies with the new code affecting 3 unique geometries and 24 total RCA polygons.  Since the error line is hard to interpret, and decisions will have to be made retarding the points that define it, we will exclude it until NOAA decides what to do with ti.
 
-```
-
-
-## RUNNING except borders
 ```{r}
 intructions_sample <- polygon_instructions_df %>% 
+  # Exclude EEZ boundaries
   filter(lat_boundary1 != "U.S. EEZ Boundary North",
-         lat_boundary2 != "U.S. EEZ Boundary South")
-
-unique(intructions_sample$lat_boundary1)
-unique(intructions_sample$lat_boundary2)
-
+         lat_boundary2 != "U.S. EEZ Boundary South") %>% 
+  # Remove instructions where 100fm_010107.csv is a problem
+  filter(!(lat_boundary1 == "40 10.00' N" &
+           lat_boundary2 == "38 00.00' N" &
+           lon_boundary1 == "100fm_010107.csv" &
+           lon_boundary2 == "150fm_010107.csv")) %>%
+  filter(!(lat_boundary1 == "38 00.00' N" &
+           lat_boundary2 == "34 27.00' N" &
+           lon_boundary1 == "100fm_010107.csv" &
+           lon_boundary2 == "150fm_010107.csv")) %>%
+   filter(!(lat_boundary1 == "40 10.00' N" &
+           lat_boundary2 == "38 00.00' N" &
+           lon_boundary1 == "100fm_010107.csv" &
+           lon_boundary2 == "200fm_petrale_010107.csv"))
 ```
 
-```{r}
-source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v5.R"))
-source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.R"))
+Once we have defined the instructions, we will apply v4.2 for al RCA of interest.
 
+```{r}
+source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.2.R"))
 ```
 
 ```{r}
@@ -264,7 +316,7 @@ source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.R"))
 results <- list()
 results_df <- data.frame(date = character(), area = character(), execution = logical(), stringsAsFactors = FALSE)
 
-# i=1
+# Loop that evaluates each instruction line and applies v4.2 to it
 for (i in 1:nrow(intructions_sample)) {
     # For each row in intructions_sample, extract the boundary names
     lat_boundary1_name <- intructions_sample$lat_boundary1[i]
@@ -283,7 +335,7 @@ for (i in 1:nrow(intructions_sample)) {
     
     # Process the selected lines to create polygons
     result <- suppressMessages(
-      rca_lines_to_polygons_v4(selected_longitude_lines, selected_latitude_lines,eez_poly)
+      rca_lines_to_polygons_v4.2(selected_longitude_lines, selected_latitude_lines,eez_poly)
     )
     
     # Extracting boundary_name from each
@@ -306,7 +358,6 @@ for (i in 1:nrow(intructions_sample)) {
     # Append to the results dataframe
     results_df <- rbind(results_df, data.frame(date = intructions_sample$year_month[i], area = final_string, execution = execution_status))
     
-    
     # Combine polygons into a multipolygons and assign the instructions df variable levels
     combined_sf <- result %>% 
       st_combine() %>% 
@@ -317,88 +368,31 @@ for (i in 1:nrow(intructions_sample)) {
     results[[i]] <- combined_sf
 }
 
-
+# Summary results
 table(results_df$execution)
-
+# Combine resulting list into a single sf object
 combined_results_sf <- do.call(rbind, results)
-
-st_write(combined_results_sf, here("RCA_data_exploration","outputs","rca_poly","rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
-
-leaflet() %>%
-    addTiles() %>%
-    addPolygons(data = unique_geometries_sf[1,], color = "red", weight=1) 
-
-
+# Export as a geopackage 
+st_write(combined_results_sf, here("RCA_data_exploration","outputs","rca_poly","inner_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
 ```
 
-
-Extract unique polygons and eval polys with issues
+Additionally, in order to visually explore the validity of the generated polygons, we can extract the unique polygons, which will consistently reduce the manual effort.
 
 ```{r}
 combined_results_sf$geometry_wkt <- st_as_text(combined_results_sf$geometry)
-
-# Use distinct() to filter out duplicates based on the WKT column
 unique_geometries_sf <- combined_results_sf %>%
   distinct(geometry_wkt, .keep_all = TRUE) %>%
-  select(-geometry_wkt) 
-```
-```{r}
-unique_geometries_sf <- st_as_sf(unique_geometries_sf)
-st_write(unique_geometries_sf, here("RCA_data_exploration","outputs","rca_poly","unique_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
-```
-
-incorrect polys annotated in google doc
-
-
-```{r}
-unique_geometries_sf[104,] # solved
-unique_geometries_sf[89,] # solved
-unique_geometries_sf[98,] # solved
-unique_geometries_sf[97,]  # solved
-unique_geometries_sf[99,] # solved
-unique_geometries_sf[75,] # solved
-unique_geometries_sf[74,] # solved
-unique_geometries_sf[69,] # solved
-
-
-
-
-
+  select(-geometry_wkt) %>% 
+  st_as_sf()
 ```
 
 ```{r}
-intructions_sample <- unique_geometries_sf[104,] %>% 
-  as.data.frame() %>% 
-  select(!geometry)
-
-lat_boundary1_name <- intructions_sample$lat_boundary1
-lat_boundary2_name <- intructions_sample$lat_boundary2
-
-lon_boundary1_name <- intructions_sample$lon_boundary1
-lon_boundary2_name <- intructions_sample$lon_boundary2
-
-# Select latitude lines
-selected_latitude_lines <- lat_boundary[lat_boundary$boundary_name == lat_boundary1_name, ] %>% 
-rbind(lat_boundary[lat_boundary$boundary_name == lat_boundary2_name, ])
-
-# Select longitude lines
-selected_longitude_lines <- lon_boundary[lon_boundary$boundary_name == lon_boundary1_name, ] %>% 
-rbind(lon_boundary[lon_boundary$boundary_name == lon_boundary2_name, ])
-
-# Process the selected lines to create polygons
-result <- suppressMessages(
-rca_lines_to_polygons_v4(selected_longitude_lines, selected_latitude_lines,eez_poly)
-)
-
-
+st_write(unique_geometries_sf, here("RCA_data_exploration","outputs","rca_poly","unique_inner_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
 ```
 
-```{r}
-source(here("RCA_data_exploration/scripts/rca_lines_to_poly_v4.2.R"))
-result <- suppressMessages(
-rca_lines_to_polygons_v4.2(selected_longitude_lines, selected_latitude_lines,eez_poly)
-)
-```
+
+
+### testing function v4
 
 ```{r}
 longitude_lines <- selected_longitude_lines
