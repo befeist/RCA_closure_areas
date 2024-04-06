@@ -14,18 +14,55 @@
 ##
 ## ---------------------------
 
-rca_lines_to_polygons_v5 <- function(longitude_lines, latitude_lines,eez_poly) {
+rca_lines_to_polygons_v5.2 <- function(longitude_lines, latitude_lines,eez_poly) {
+  
+  
+  
+  geometries <- st_geometry(latitude_lines)
+  
+  # Initialize an empty vector to store max latitudes
+  max_latitudes <- numeric(length(geometries))
+  
+  # Loop through each geometry to find the max latitude
+  for (i in seq_along(geometries)) {
+    # Extract coordinates for each geometry
+    coords <- st_coordinates(geometries[[i]])
+    # The Y coordinates (latitude) are in the second column
+    latitudes <- coords[, "Y"]
+    # Find the maximum latitude for this geometry
+    max_latitudes[i] <- max(latitudes)
+  }
+  
+  # You can then add these max latitudes back to your original data frame, if needed
+  # latitude_lines$max_latitude <- max_latitudes
+  
+  boundary_condition_s <- any(latitude_lines$boundary_name == "U.S. EEZ Boundary South")
+  # Set min_latitude based on the condition
+  min_latitude <- ifelse(boundary_condition_s, 30, min(max_latitudes))
+  
+  boundary_condition_n <- any(latitude_lines$boundary_name == "U.S. EEZ Boundary North")
+  max_latitude <- ifelse(boundary_condition_n, 48.6, max(max_latitudes))
+  
+  # min_latitude = min(max_latitudes)
+  # max_latitude = max(max_latitudes)
+  ## Create a bbox that will intersect the RCA lines.
+  bbox <- st_as_sfc(st_bbox(c(xmin = -130, xmax = -115, 
+                              ymin = min_latitude, ymax = max_latitude), 
+                            crs = st_crs(longitude_lines)))
+  
+  
+  
   
   # Clip RCA boundary lines based on latitude delimitation lines.
   ## Find min and max latitude values from latitude lines.
-  coords = st_coordinates(st_geometry(latitude_lines))
-  latitudes = coords[,2] # The latitude values are in the second column of 'coords'
-  min_latitude = min(latitudes)
-  max_latitude = max(latitudes)
-  ## Create a bbox that will intersect the RCA lines.
-  bbox <- st_as_sfc(st_bbox(c(xmin = -180, xmax = 180, 
-                              ymin = min_latitude, ymax = max_latitude), 
-                            crs = st_crs(longitude_lines)))
+  # coords = st_coordinates(st_geometry(latitude_lines))
+  # latitudes = coords[,2] # The latitude values are in the second column of 'coords'
+  # min_latitude = min(latitudes)
+  # max_latitude = max(latitudes)
+  # ## Create a bbox that will intersect the RCA lines.
+  # bbox <- st_as_sfc(st_bbox(c(xmin = -130, xmax = -115, 
+  #                             ymin = min_latitude, ymax = max_latitude), 
+  #                           crs = st_crs(longitude_lines)))
   
   # eez_poly <- st_polygonize(shoreline[2,]) %>% 
   #   st_collection_extract("POLYGON")
@@ -35,15 +72,15 @@ rca_lines_to_polygons_v5 <- function(longitude_lines, latitude_lines,eez_poly) {
   # clipped_lines <- st_intersection(longitude_lines, difference)
   
   ### Patch -----
-  # This is a but redundant but seems to work
+  # This is a bit redundant but seems to work
   difference <- st_intersection(eez_poly,bbox)
   pre_clipped_lines <- st_intersection(longitude_lines, bbox)
   clipped_lines <- st_intersection(pre_clipped_lines, difference)
-  ### Patch -----
+  
   
   MultilineFromIntersections <- function(lat_line, clipped_lines) {
     # Perform intersection
-    coastline_intersect <- st_intersection(latitude_lines, clipped_lines)
+    coastline_intersect <- st_intersection(latitude_lines, longitude_lines)
     
     # Extract points from intersection geometries
     # print("Extracting points from intersection geometries")

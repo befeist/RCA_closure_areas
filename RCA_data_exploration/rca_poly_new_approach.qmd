@@ -293,7 +293,7 @@ coastline <- st_read( here(data_path,"spatial_ref_files/all_shoreline_main_comb.
 ### Alternatively we can generate custom lines, to have more exploratory capacity through this approach testing
 longitude_start = -130.36
 longitude_end = -110.36
-constant_latitude = 33.00
+constant_latitude = 32.56999
 horizontal_line = st_sfc(st_linestring(matrix(c(longitude_start, constant_latitude, longitude_end, constant_latitude), ncol = 2, byrow = TRUE)), crs = 4326)
 horizontal_line_sf <- st_sf(geometry = horizontal_line) %>%
   mutate(boundary_type = "latitude",
@@ -304,8 +304,9 @@ horizontal_line_sf <- st_sf(geometry = horizontal_line) %>%
 
 latitude_lines <- rbind() # reset
 latitude_lines <- n_s_boundaries_sf %>%
-  filter(boundary_name %in% c(#"34 27.00' N",
-                              "36 00.00' N"))
+  filter(boundary_name %in% c("34 27.00' N"
+                              # "36 00.00' N"
+                              ))
 
 # latitude_lines <- rbind() # reset
 # latitude_lines <- n_s_boundaries_sf %>%
@@ -316,7 +317,7 @@ latitude_lines <- n_s_boundaries_sf %>%
 latitude_lines <- rbind(horizontal_line_sf,latitude_lines)
 
 # Select two lines from each object
-selected_longitude_lines <- rbind(longitude_lines[105, ], coastline)
+# selected_longitude_lines <- rbind(longitude_lines[105, ], coastline)
 selected_latitude_lines <- latitude_lines
 ```
 
