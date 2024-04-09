@@ -1,6 +1,6 @@
 # Creating RCA polygons
 
-This folder in the repository contains the scripts associated with generating RCA polygons based on the boundary lines established in the legislation. It pragmatically generates these areas based on the defined border lines. The 'polygonize.qmd' file contains the initial code that generated such areas. However, some of these were incorrectly created. To assess the problems in polygon generation, 'rca_exploration_and_testing.qmd' evaluates the RCA lines, and 'rca_poly_new_approach.qmd' evaluates the polygon generation.
+This folder in the repository contains the scripts associated with generating RCA polygons based on the boundary lines established in the legislation. It pragmatically generates these areas based on the defined border lines. The `polygonize.qmd` file contains the initial code that generated such areas. However, some of these were incorrectly created. To assess the problems in polygon generation, `rca_exploration_and_testing.qmd` evaluates the RCA lines, and `rca_poly_new_approach.qmd`, `rca_generation_testing.qmd` evaluates the polygon generation.
 
 # Repository Structure 
 
@@ -15,9 +15,19 @@ RCA_data_exploration
     |__ spatial_ref_lines
   |__ scripts
   |__ outputs
+    |__ lines_report
+    |__ rca_poly
 
 ```
 
 - *Ruttenberg et al collaboration* folder and subfolders is not available in the repository, it has to be retrieved from the DRIVE.
 - *scripts* folder contains Cullen's code to generate the objects for the polygons creation.
-- *outputs* contain any results generated and stored from the code. So far it only contains the xlsx with the list of incorrect lines.
+- *outputs* contain any results generated and stored from the code.
+
+# Lines Report
+
+The `lines_report.qmd` and `lines_report.html` contain details of incorrect RCA lines detected. These are generated directly from the CSV file and displayed alongside the NOAA lines for comparison.
+
+# RCA Creation Function
+
+The final version of the function to generate the polygons is stored in `rca_lines_to_poly_v6.R`. Details of its execution, results, and validation process are documented in `rca_generation_and_validation.qmd`.

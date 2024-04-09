@@ -374,13 +374,59 @@ rca_lines_to_polygons_v5.5 <- function(longitude_lines, latitude_lines,eez_poly)
     rename(geometry = x) %>% 
     mutate(id = row_number(),.before=geometry)
   
+  # Clip out any inner polygon
+  # To do it we will evaluate relationships between polygons based on whether they intersect with coastline features
+  ## Get information on intersection polygons
   
-  map <- leaflet() %>%
-    addTiles() %>%
-    addPolygons(data = polygon_sf, color = "red", weight=1) %>%
-    addPolylines(data = selected_latitude_lines, color = "blue", weight=2) %>%
-    addPolylines(data = clipped_lines, color = "orange", weight=2)
   
-  print(map)
-  return(polygon_sf)
+  if (any(unlist(st_intersects(polygon_sf, coastline)))){
+    
+    coastline_poly <- st_combine(st_union(coastline)) %>% 
+      st_polygonize() %>% 
+      st_collection_extract("POLYGON") %>% 
+      st_as_sf() %>% 
+      rename(geometry = x) %>% 
+      mutate(id = row_number(),.before=geometry)
+    
+    
+    coastline_oi_index <- st_intersects(polygon_sf, coastline_poly)
+    coastline_oi <- coastline_poly[unlist(coastline_oi_index),]
+    no_land_rca <- st_difference(polygon_sf, st_union(coastline_poly))
+    
+    
+    closed_rca_lines <- st_combine(st_union(clipped_lines)) %>% 
+      st_polygonize() %>% 
+      st_collection_extract("POLYGON") %>% 
+      st_as_sf() %>% 
+      rename(geometry = x) %>% 
+      mutate(id = row_number(),.before=geometry)
+    
+    areas <- as.vector(st_area(closed_rca_lines))
+    # Exclude polygons with an area greater than 1e9 (easy fix, there must be a better way)
+    filtered_closed_rca <- closed_rca_lines[areas <= 3e9, ]
+    
+    
+    if(dim(filtered_closed_rca)[1] == 0) {
+      
+      rca_coastline_polygons_filtered <- no_land_rca
+    } else {
+      intersections <- st_intersects(coastline, filtered_closed_rca)
+      areas_to_remove <- filtered_closed_rca[unlist(intersections), ] 
+      rca_coastline_polygons_filtered <- st_difference(no_land_rca, st_union(areas_to_remove))
+    }
+    
+  
+  } else {
+    rca_coastline_polygons_filtered <- polygon_sf
+  }
+  
+  
+  # map <- leaflet() %>%
+  #   addTiles() %>%
+  #   addPolygons(data = rca_coastline_polygons_filtered, color = "red", weight=1) %>%
+  #   addPolylines(data = selected_latitude_lines, color = "blue", weight=2) %>%
+  #   addPolylines(data = clipped_lines, color = "orange", weight=2)
+  # 
+  # print(map)
+  return(rca_coastline_polygons_filtered)
 }
