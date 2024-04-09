@@ -21,7 +21,7 @@ RCA_data_exploration
 ```
 
 - *Ruttenberg et al collaboration* folder and subfolders is not available in the repository, it has to be retrieved from the DRIVE.
-- *scripts* folder contains Cullen's code to generate the objects for the polygons creation.
+- *scripts* folder contains Cullen's code to generate the objects for the polygons creation and Pol's functions to generate the RCAs.
 - *outputs* contain any results generated and stored from the code.
 
 # Lines Report
