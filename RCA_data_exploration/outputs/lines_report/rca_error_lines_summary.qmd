@@ -402,5 +402,30 @@ leaflet() %>%
           addLayersControl(overlayGroups = c( "emLab RCA line", "NOAA RCA line"))
 ```
 
+Finally, "100fm_091002.csv" line is ending well before the northern border. The code is designed to handle the absence of intersections with latitude borders when these are separated by distances of less than a few meters. However, for this line, the distance is larger than usual, and any extrapolation without a defined criteria could result in substantial area modification. Therefore, it requires review.
+
+```{r, echo = FALSE}
+source(here("RCA_data_exploration/scripts/generate_rca_lines.R"))
+filtered_rca_lines_sf <- rca_lines_sf %>%
+  filter(boundary_name == "100fm_091002.csv")
+
+filtered_rca_noaa_lines_sf <- new_isolines %>%
+  filter(boundary_name == "100fm_091002.csv")
+```
+
+```{r, echo = FALSE}
+leaflet() %>%
+     addTiles() %>%
+     addPolylines(data = filtered_rca_noaa_lines_sf, color = "orange", weight=2, group = "NOAA RCA line") %>%
+     addPolylines(data = filtered_rca_lines_sf, color = "blue", weight=2, group = "emLab RCA line")%>%
+  fitBounds(lng1 = -126, lat1 = 48.49, 
+                    lng2 = -125, lat2 = 48.25) %>%
+          addLegend(position = "topright", 
+                    title = "100fm_091002.csv", 
+                    opacity = 0, 
+                    labels = "", 
+                    colors = "transparent") %>% 
+          addLayersControl(overlayGroups = c( "emLab RCA line", "NOAA RCA line"))
+```
 
 
