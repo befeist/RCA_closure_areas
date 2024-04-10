@@ -324,7 +324,7 @@ st_write(combined_results_sf, here("RCA_data_exploration","outputs","rca_poly","
 ```
 
 ```{r}
-st_write(unique_geometries, here("RCA_data_exploration","outputs","rca_poly","unique_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
+st_write(unique_geometries_updated, here("RCA_data_exploration","outputs","rca_poly","unique_rca_polygons.gpkg"), layer = "polygons_layer", driver = "GPKG", delete_layer = TRUE)
 ```
 
 ### Errors evaluation
@@ -384,7 +384,7 @@ To sum up, there are `r dim(incorrect_lines)[1] + dim(unique_land_refs)[1]` uniq
 ### Polygons inspection
 
 ```{r}
-unique_areas <- read_geometries <- st_read(dsn = here("RCA_data_exploration", "outputs", "rca_poly", "unique_rca_polygons.gpkg"), layer = "polygons_layer")
+unique_areas <- st_read(dsn = here("RCA_data_exploration", "outputs", "rca_poly", "unique_rca_polygons.gpkg"), layer = "polygons_layer")
 ```
 
 ```{r}
