@@ -319,45 +319,55 @@ rca_lines_to_polygons_v6 <- function(longitude_lines, latitude_lines,eez_poly) {
   ## Below, we evaluate the relationships between polygons to discard those not pertaining to RCAs.
   ### Since it has been observed that all those affected areas are related to coastal features, we will base our analysis on
   ### whether they do intersect with coastline features.
+  
   if (any(unlist(st_intersects(polygon_sf, coastline)))){
     # Generate islands and coastal features polygons.
-    coastline_poly <- st_combine(st_union(coastline)) %>% 
-      st_polygonize() %>% 
-      st_collection_extract("POLYGON") %>% 
-      st_as_sf() %>% 
-      rename(geometry = x) %>% 
+    coastline_poly <- st_combine(st_union(coastline)) %>%
+      st_polygonize() %>%
+      st_collection_extract("POLYGON") %>%
+      st_as_sf() %>%
+      rename(geometry = x) %>%
       mutate(id = row_number(),.before=geometry)
     # Select those coastal polygons intersecting with our preliminary RCA.
     coastline_oi_index <- st_intersects(polygon_sf, coastline_poly)
     coastline_oi <- coastline_poly[unlist(coastline_oi_index),]
     # Select RCA subareas that are not in contact with land.
     no_land_rca <- st_difference(polygon_sf, st_union(coastline_poly))
-    # Create self-closing RCA features.
-    closed_rca_lines <- st_combine(st_union(clipped_lines)) %>% 
-      st_polygonize() %>% 
-      st_collection_extract("POLYGON") %>% 
-      st_as_sf() %>% 
-      rename(geometry = x) %>% 
-      mutate(id = row_number(),.before=geometry)
-    # Remove those self-closing RCA features that should not be generated if RCA lines do not self-intersect
-    ## or if isolines do not intersect each other. To avoid associated problems with features like the Channel Islands, 
-    ## a basic approach has been used to discard them by adding a surface threshold that excludes them. 
-    ### Exclude polygons with an area greater than 3e9m (easy fix, there must be a better way).
-    areas <- as.vector(st_area(closed_rca_lines))
-    filtered_closed_rca <- closed_rca_lines[areas <= 3e9, ]
     
-    if(dim(filtered_closed_rca)[1] == 0) { # No self-closing RCA features considered
+    # Remove those RCA features that should not be generated if RCA lines do not self-intersect
+    ## or if isolines do not intersect each other. To avoid associated problems with features like the Channel Islands,
+    ## a basic approach has been used to discard them by adding a surface threshold that excludes them.
+    ### Exclude polygons with an area greater than 3e9m (easy fix, there must be a better way).
+    closed_intersections <- st_intersects(no_land_rca, sparse = FALSE)
+    
+    if (is.null(closed_intersections)){ ## -- to review -- some of it could be redundant
       rca_coastline_polygons_filtered <- no_land_rca
-    } else { # Update any self-closing RCA feature.
-      intersections <- st_intersects(coastline, filtered_closed_rca)
-      areas_to_remove <- filtered_closed_rca[unlist(intersections), ] 
-      rca_coastline_polygons_filtered <- st_difference(no_land_rca, st_union(areas_to_remove))
+    } else {
+      intersects_with_others <- apply(closed_intersections, 1, function(row) {
+        sum(row) > 1  # Count TRUEs per row, excluding self
+      })
+      intersecting_polygons_indices <- which(intersects_with_others)
+      selected_polygons <- no_land_rca[intersecting_polygons_indices, ]
+      
+      areas <- as.vector(st_area(selected_polygons)) 
+      filtered_closed_rca <- selected_polygons[areas <= 3e9, ]
+      
+      selected_intersections <- st_intersects(coastline, filtered_closed_rca, sparse = FALSE)
+      
+      if(all(!selected_intersections)) { # No self-closing RCA features considered 
+        rca_coastline_polygons_filtered <- no_land_rca
+      } else { # Update any self-closing RCA feature. 
+        intersection_indices <- apply(selected_intersections, 1, function(row) which(row)) %>%  unlist()
+        areas_to_remove <- filtered_closed_rca[unlist(intersection_indices), ]
+        rca_coastline_polygons_filtered <- st_difference(no_land_rca, st_union(areas_to_remove))
+      }
     }
+    
   } else {
     rca_coastline_polygons_filtered <- polygon_sf
   }
   
-  ## Plot for individual inspection. Deactiave when running for all instructions
+  # Plot for individual inspection. Deactivate when running for all instructions
   # map <- leaflet() %>%
   #   addTiles() %>%
   #   addPolygons(data = rca_coastline_polygons_filtered, color = "red", weight=1) %>%

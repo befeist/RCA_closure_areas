@@ -373,7 +373,7 @@ unique_land_refs <- combined_df_with_empty_geometries %>%
   distinct(uniqueRCAid, .keep_all = TRUE) %>%
   select(lat_boundary1, lat_boundary2, lon_boundary1, lon_boundary2)
 
-kable(unique_land_refs[,-1]) %>% 
+kable(unique_land_refs) %>% 
   kable_styling("striped")
 ```
 

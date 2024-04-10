@@ -493,7 +493,7 @@ selected_latitude_lines <- latitude_lines
 testing_poly <- rca_lines_to_polygons_v2(selected_longitude_lines,selected_latitude_lines)
 ```
 
-## US Border issues (IN PROGRESS)
+## US Border issues
 
 It seems that some isolines do not intersect with the borders. Therefore, the updated approach that resolved the previous issues cannot be applied in this context. To solve this we have updated the script so it assesses whether there are missing intersection points between latitude and longitude lines. If a missing point exist, then it searches for the closes distance between lines and fills the gap.
 
