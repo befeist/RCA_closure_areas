@@ -456,6 +456,8 @@ display_polygons_one_by_one(unique_areas_non_empty)
 
 ### Exploring all RCAs
 
+#### Blake's question
+
 As reviewed by NOAA, there are some missing RCA. Below we explore why these were not generated.
 
 ```{r}
@@ -477,9 +479,13 @@ polygon_instructions_df %>%
 As we can see this is due to the error with line 100fm_091002.csv as outlined before.
 
 
+#### Nathan's question
 
+```{r}
+rca_0911_eureka <- st_read(dsn = here("RCA_data_exploration", "outputs", "rca_poly", "unique_rca_polygons_0911_eureka.gpkg"))
 
-
+display_polygons_one_by_one(rca_0911_eureka)
+```
 
 
 

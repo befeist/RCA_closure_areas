@@ -18,9 +18,8 @@
 ## directories
 # data_path <- here::here('RCA_data_exploration/Ruttenberg et al collaboration')
 # coord_path <- here::here(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21')
-data_path <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My Drive/Ruttenberg et al collaboration/ucsb-outputs/'
-coord_path <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My Drive/Ruttenberg et al collaboration/RCA_Coordinate_CSV_Files_cleaned_2002_21/'
-
+data_path <- here::here('RCA_data_exploration/Ruttenberg et al collaboration')
+coord_path <- here::here(data_path, 'RCA_Coordinate_CSV_Files_cleaned_2002_21')
 
 ## files
 rca_data_fn  <- 'Historical_trawl_RCA_2002-2021_CEW_LC_01Oct2021.xlsx'
@@ -87,7 +86,7 @@ north_america <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf
 
 ##
 # cal_poly_fp <- here::here(data_path, cal_poly_fn)
-cal_poly_fp <- '/Users/traceymangin/Library/CloudStorage/GoogleDrive-tmangin@ucsb.edu/My Drive/Ruttenberg et al collaboration/RCA_Mapping_Project_4Cal_Poly.gdb'
+cal_poly_fp <- here::here(data_path, cal_poly_fn)
 cal_poly_layers <- terra::vector_layers(cal_poly_fp)
 
 ca_poly_rca_vect_list <- purrr::map(

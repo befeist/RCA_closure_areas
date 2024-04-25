@@ -353,7 +353,7 @@ tagList(html)
 
 ## Additional lines errors
 
-When creating the polygons, we detected an anomaly northwest of San Francisco, in front of the Greater Farallones National Marine Sanctuary, for the line "100fm_010107.csv". **This anomaly occurred in both NOAA lines and our generated lines.** There is a section where the line splits into two. Upon inspecting the line in more detail using QGIS, we can observe that this shape is composed of several redundant vertices.
+When creating the polygons, we detected an anomaly northwest of San Francisco, in front of the Greater Farallones National Marine Sanctuary, for the line "100fm_010107.csv" and "150fm_010107.csv". **This anomaly occurred in both NOAA lines and our generated lines.** There is a section where the line splits into two. Upon inspecting the line in more detail using QGIS, we can observe that this shape is composed of several redundant vertices.
 
 ```{r, echo = FALSE}
 source(here("RCA_data_exploration/scripts/generate_rca_lines.R"))
