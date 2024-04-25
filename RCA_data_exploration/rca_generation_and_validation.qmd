@@ -26,6 +26,7 @@ librarian::shelf(
   data.table,
   openxlsx,
   terra,
+  janitor,
   leaflet,
   sf,
   openxlsx,
@@ -452,5 +453,33 @@ empty_geoms <- st_is_empty(unique_areas)
 unique_areas_non_empty <- unique_areas[!empty_geoms, ]
 display_polygons_one_by_one(unique_areas_non_empty)
 ```
+
+### Exploring all RCAs
+
+As reviewed by NOAA, there are some missing RCA. Below we explore why these were not generated.
+
+```{r}
+all_rca <- st_read(dsn = here("RCA_data_exploration", "outputs", "rca_poly", "rca_polygons.gpkg"), layer = "polygons_layer")
+```
+
+```{r}
+unique(all_rca$year_month)
+unique(polygon_instructions_df$year_month)
+```
+
+We see that there are missing areas for 2002-10, 2002-11, 2002-12
+
+```{r}
+polygon_instructions_df %>% 
+  filter( year_month %in% c("2002-10", "2002-11", "2002-12"))
+```
+
+As we can see this is due to the error with line 100fm_091002.csv as outlined before.
+
+
+
+
+
+
 
 
