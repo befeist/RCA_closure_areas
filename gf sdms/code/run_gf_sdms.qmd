@@ -1,0 +1,102 @@
+---
+title: "Groundfish SDMs in RCAs"
+author: "Owen Liu"
+format: html
+editor: visual
+---
+
+# Purpose
+
+Run SDMs and project them to a high-resolution grid within historical RCA footprint, to look at overlap
+
+```{r}
+# Libraries
+library(tidyverse)
+library(sf)
+library(terra)
+library(here)
+library(viridis)
+```
+
+
+# Import Data
+
+1. Trawl survey data, matched to GLORYS
+
+```{r}
+trawl <- read_rds(here('gf sdms','data','trawl_glorys_joined.rds'))
+```
+
+
+2. Prediction grids. RCA-specific (high resolution, restricted domain) and basic GLORYS (lower resolution, broader domain)
+
+```{r}
+rca_gr <- read_rds(here('gf sdms','data','rca_base_prediction_grid.rds'))
+
+glorys_gr <- read_rds(here('gf sdms','data','glorys_hindcast_grid.rds'))
+
+# this mask just makes all cells outside the RCA footprint into NAs
+rca_mask <- rast(here('gf sdms','data','rca_raster_mask.tif'))
+```
+
+# Load Functions
+
+```{r}
+# rmarkdown::render(here('gf sdms','code','sdmTMB-rcas-model-functions.Rmd'),quiet=T)
+```
+
+
+# Tests
+
+```{r}
+m <- run_sdmTMB(trawl,spp="canary rockfish",use_depth=F,include_substrate = F)
+
+m <- run_sdmTMB(trawl,spp="pacific hake",use_depth=T)
+```
+
+```{r,fig.width=10,fig.height=12}
+# test with GLORYS grid
+glorys_pred_df <- glorys_gr %>% 
+  mutate(lontrawl_km=lonUTM,lattrawl_km=latUTM,depth_trawl=depth) %>% 
+  filter(year %in% 2003:2019)
+glorys_hake <- make_predictions(m,nd=glorys_pred_df)
+glorys_hake <- glorys_hake$data %>% st_as_sf(coords=c("lonUTM","latUTM"),crs=26910)
+
+glorys_hake %>% 
+  ggplot(aes(color=est))+
+  geom_sf(size=0.3)+
+  scale_color_viridis()+
+  facet_wrap(~year)+
+  theme_minimal()+
+  theme(panel.border = element_rect(color='black',fill=NA))
+```
+
+```{r}
+# index??
+idx <- glorys_hake %>% 
+  group_by(year) %>% 
+  summarise(totidx=sum(exp(est))/1e6)
+
+idx %>% ggplot(aes(year,totidx))+geom_line()+geom_point()
+```
+
+
+
+```{r}
+# test with RCA grid
+rca_2007 <- build_rca_grid_yr(2007)
+
+# predict
+xpred <- make_predictions(m,nd=rca_2007)
+canary_2007 <- xpred$data
+
+testrast <- canary_2007 %>%
+  dplyr::select(Easting_m,Northing_m,est)%>%
+  st_as_sf(coords = c("Easting_m","Northing_m"),crs=26910) %>%
+  st_rasterize() %>% 
+  rast()
+
+plot(testrast*rca_mask,range=c(0,10))
+
+writeRaster(testrast,here('gf sdms','model output','test_rast_canary_2007.tif'))
+```

@@ -40,3 +40,4 @@ Thumbs.db
 # Big Ocean Data #
 ######################
 /gf sdms/data/*
+/gf sdms/model output/*

@@ -11,6 +11,8 @@ library(nwfscSurvey)
 library(tidyverse)
 library(lubridate)
 library(sf)
+library(stars)
+library(terra)
 library(nngeo)
 library(marmap)
 library(here)
@@ -322,6 +324,7 @@ range(glorys_times$year)
 ```
 
 Short function to join one year of data at a time (so the import from the .nc file isn't too onerous)
+
 ```{r}
 join_glorys_trawl <- function(yr){
   trawl_yr <- trawl %>% 
@@ -366,12 +369,16 @@ join_glorys_trawl <- function(yr){
   # clean up columns and finish
   out <- trawl_glorys_yr %>% 
     dplyr::select(date_trawl=date,year,species,cpue_kg_km2,lattrawlUTM,lontrawlUTM,depth_trawl,glorys_dttm,
-                  depth_glorys=depth,glorys_time=time,longlorysUTM=lonUTM,latglorysUTM=latUTM,prop_hard_mixed,thetao,o2)
+                  depth_glorys=depth,glorys_time=time,longlorysUTM=lonUTM,latglorysUTM=latUTM,prop_hard_mixed,thetao,o2) %>% 
+    # change lat/lon to meters
+    mutate(lattrawlUTM=lattrawlUTM*1000,lontrawlUTM=lontrawlUTM*1000,
+           latglorysUTM=latglorysUTM*1000,longlorysUTM=longlorysUTM*1000)
   out
 }
 ```
 
 Test this for one year
+
 ```{r}
 trawl_glorys_2003 <- join_glorys_trawl(yr=2003)
 glimpse(trawl_glorys_2003)
@@ -399,10 +406,10 @@ Do the join for all years
 
 ```{r}
 trawl_glorys_joined <- purrr::map_df(2003:2020,join_glorys_trawl)
-# for some reason this didn't run with all years at once (maybe memory hole), so just row bind
-# trawl_glorys_2018 <- join_glorys_trawl(2018)
-# trawl_glorys_joined <- trawl_glorys_joined %>% 
-#   bind_rows(trawl_glorys_2018)
+
+# last change- use km
+trawl_glorys_joined <- trawl_glorys_joined %>% 
+  mutate(lontrawl_km=lontrawlUTM/1000,lattrawl_km=lattrawlUTM/1000)
 ```
 
 ## Save
@@ -413,6 +420,23 @@ write_rds(trawl_glorys_joined,here('gf sdms','data','trawl_glorys_joined.rds'))
 # Hindcast Grid
 
 Also make a version of this that is for projection. For now, make only 1 annual prediction, so use August conditions
+
+```{r}
+# make a buffered outline of the trawl data using fmesher package
+dat_buffer <- fm_nonconvex_hull(dat_sf,
+                                concave = -0.025,
+                                convex = -0.025)
+# crop this buffer so it doesn't overlap the coast
+dat_buffer <- st_difference(dat_buffer,summarise(coast))
+
+# plot it on top of what we just mapped
+ggplot()+
+  # spatial geom for maps
+  geom_sf(data=dat_sf,aes(size=cpuelt))+
+  geom_sf(data=coast,fill='gray20')+
+  geom_sf(data=dat_buffer,fill=NA,color='red')+
+  facet_wrap(~size.cat)
+```
 
 
 ```{r}
@@ -473,10 +497,10 @@ Visualize
 glorys_pred_grid %>% filter(year==2003) %>% ggplot(aes(lonUTM,latUTM,color=thetao))+geom_point()+coord_equal()+scale_color_viridis()
 ```
 
-Save
+## Save
 
 ```{r}
-write_rds(glorys_pred_grid,here('gf sdms','data',"GLORYS",'glorys_hindcast_grid.rds'))
+write_rds(glorys_pred_grid,here('gf sdms','data','glorys_hindcast_grid.rds'))
 ```
 
 # RCA Grid
@@ -491,21 +515,34 @@ For this project, we also want to make a higher-resolution grid that focuses on 
 # LR,1052172.05,3613572.88
 # LL,293407.62,3613572.88
 # EPSG: 26910
-library(stars)
 rca_cent <- read_csv(here('gf sdms','data','Overlay_200m_gridcell_centroid_pts_xy_UTM.csv'))
 test<- rca_cent %>% st_as_sf(coords = c("Easting_m","Northing_m"),crs=26910)
+testbin <- test %>% mutate(incl=1) %>% select(incl)
 
 # test with just the empty raster
-tic("rasterizing:")
-testrast <- st_rasterize(test)
+# tic("stars:")
+# testrast <- st_rasterize(test)
+# toc()
+tic("terra:")
+testrast <- st_rasterize(test) %>% rast()
 toc()
-# write_stars(testrast,dsn=here('gf sdms','data','test_raster.tif'))
+
+# set NAs
+template_rast <- testrast %>% 
+  subst(0,NA)
+
+# make a raster mask (just zeroes and ones)
+template_mask <- st_rasterize(testbin) %>% rast() %>% 
+  subst(0,NA)
+
+plot(template_rast)
+plot(template_mask)
+
+# save mask
+writeRaster(template_mask,here('gf sdms','data','rca_raster_mask.tif'))
 ```
 
-
-
-
-Function to extract from GLORYS to this high-resolution grid. We'll do this with nearest neighbors, as before
+Match RCA raster to GLORYS to extract covariates
 
 ```{r}
 # find nearest neighbors
@@ -555,28 +592,26 @@ stations.bathy <- get.depth(b,xy,locator=F) %>%
   rename(bathy=depth)
 
 rca_base_grid <- rca_base_grid %>% 
-  mutate(bathy=stations.bathy$bathy)
+  mutate(bathy=stations.bathy$bathy) %>% 
+  # remove land and make depth positive
+  mutate(bathy=ifelse(bathy>0,NA,bathy)) %>% 
+  mutate(bathy= -bathy)
 
 # did this work?
 tic("rasterizing bathy:")
-rca_bathy <- rca_base_grid %>% dplyr::select(Easting_m,Northing_m,bathy)%>% st_as_sf(coords = c("Easting_m","Northing_m"),crs=26910)
-testbathy <- st_rasterize(rca_bathy)
+rca_bathy <- rca_base_grid %>% 
+  dplyr::select(Easting_m,Northing_m,bathy)%>% 
+  st_as_sf(coords = c("Easting_m","Northing_m"),crs=26910)
+br <- st_rasterize(rca_bathy) %>% rast()
+# multiply by binary raster to set NAs
+br <- br*template_mask
 toc()
-
-# write_stars(testbathy,dsn=here('gf sdms','data','test_bathy_raster.tif'))
-library(terra)
-br <- rast(testbathy)
-plot(br)
+plot(br,range=c(-1500,0))
 ```
 
+## Save
 
 ```{r}
-# Use the matching key above to build the prediction tibble for RCA
-
-build_rca_grid_yr <- function(yr){
-  g <- glorys_rca_base_grid %>% filter(year==yr)
-  out <- rca_base_grid
-}
-
+write_rds(rca_base_grid,here('gf sdms','data','rca_base_prediction_grid.rds'))
 ```
 

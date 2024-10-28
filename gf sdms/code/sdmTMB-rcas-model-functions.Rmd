@@ -13,6 +13,8 @@ library(sdmTMB)
 library(tidyverse)
 library(lubridate)
 library(sf)
+library(stars)
+library(terra)
 library(here)
 library(Hmisc)
 library(visreg)
@@ -22,12 +24,12 @@ options(dplyr.summarise.inform=FALSE)
 
 # Purpose
 
-Write functions utilizing `sdmTMB` to fit and project models for west coast groundfish based on hindcast ROMS oceanographic data.
+Write functions utilizing `sdmTMB` to fit and project models for west coast groundfish based on hindcast GLORYS oceanographic data.
 
-*Note: All the data required for running the functions here have been produced in the `sdmTMB data construction.Rmd` script.
+*Note: All the data required for running the functions here have been produced in the `sdmTMB-data-construction-glorys-rcas.Rmd` script.
 
-```{r, message=F, echo=F, include=F}
-rmarkdown::render(here::here('scripts','sdmTMB-data-construction.Rmd'),quiet=TRUE)
+```{r, message=F,eval=F, echo=F, include=F}
+rmarkdown::render(here::here('gf sdms','code','sdmTMB-data-construction-glorys-rcas.Rmd'),quiet=TRUE)
 ```
 
 # Functions for Fitting
@@ -42,25 +44,23 @@ prepare_species <- function(dat,spp){
     dplyr::filter(species==spp) %>% 
     
     # rescale depth, oxygen, and temp to be N(0,1)
-    mutate(across(c(depth_trawl,mean_temp_roms_30,mean_oxygen_roms_30),~(scale(.) %>% as.vector()),.names="{.col}_norm")) %>% 
-    
-    # add a year indicator
-    mutate(year=lubridate::year(date))
+    mutate(across(c(depth_trawl,thetao,o2),~(scale(.) %>% as.vector()),.names="{.col}_norm"))
+  dat_sub
 }
 ```
 
 ## sdmTMB Model Function
 
-Write a function that runs sdmTMB to fit a single model. It will call the previous `prepare_species` function to make the appropriate species data. For now, the environmental variable names are not generic (always `mean_temp_roms_30_norm` and `mean_oxygen_roms_30_norm` for fitting to the ROMS data).
+Write a function that runs sdmTMB to fit a single model. It will call the previous `prepare_species` function to make the appropriate species data. For now, the environmental variable names are not generic (always `thetao` and `o2` for fitting to the GLORYS data).
 
 ```{r}
-run_sdmTMB <- function(dat,spp,use_depth=F,time_vary=F,spatial_field=T,include_substrate=T,hab_spline=F,env_spline=F,spline_k=3){
+run_sdmTMB <- function(dat,spp,use_depth=F,time_vary=F,spatial_field=T,include_substrate=F,hab_spline=F,env_spline=F,spline_k=3){
   # filter data for species
   modeldat <- prepare_species(dat,spp=spp)
   
   # make spde
-  spde <- make_mesh(modeldat,xy_cols = c('longitude','latitude'), 
-                   cutoff = 20)
+  spde <- make_mesh(modeldat,xy_cols = c('lontrawl_km','lattrawl_km'), 
+                   cutoff = 40)
   
   # model formula
   formula <- paste0("cpue_kg_km2 ~ ")
@@ -73,10 +73,10 @@ run_sdmTMB <- function(dat,spp,use_depth=F,time_vary=F,spatial_field=T,include_s
   if(!include_substrate) substrate=""
   
   # make the environmental effects
-  enviro <- paste("mean_temp_roms_30_norm + I(mean_temp_roms_30_norm^2) + mean_oxygen_roms_30_norm + I(mean_oxygen_roms_30_norm^2)")
+  enviro <- paste("thetao_norm + I(thetao_norm^2) + o2_norm + I(o2_norm^2)")
   # wiggly environmental relationships?
-  enviro <- ifelse(env_spline, paste0("s(mean_temp_roms_30_norm,k=",spline_k,") + ",
-                                      "s(mean_oxygen_roms_30_norm,k=",spline_k,")"),
+  enviro <- ifelse(env_spline, paste0("s(thetao_norm,k=",spline_k,") + ",
+                                      "s(o2_norm,k=",spline_k,")"),
                    enviro)
   # if depth effect, add to model formla
   if(use_depth) {
@@ -89,7 +89,7 @@ run_sdmTMB <- function(dat,spp,use_depth=F,time_vary=F,spatial_field=T,include_s
     time_varying = as.formula(time_formula)
     time = "year"
   } else {
-    formula = paste0(formula, substrate, " + ", enviro)
+    formula = paste0(formula,"+", substrate, " + ", enviro)
     time_varying = NULL
     time = "year"
   }
@@ -109,9 +109,9 @@ run_sdmTMB <- function(dat,spp,use_depth=F,time_vary=F,spatial_field=T,include_s
     family = tweedie(link = "log"),
     data = modeldat,
     anisotropy = FALSE,
-    spatial = spatial_field,
+    spatial = spatial_field),
     #extra_time argument necessary for prediction?
-    extra_time=1980:2100),
+    # extra_time=1980:2100),
   silent=F)
 
 
@@ -162,10 +162,10 @@ run_sdmTMB_cv <- function(dat,spp,nknots=400,use_depth=F,time_vary=F,spatial_fie
   if(!include_substrate) substrate=""
   
   # make the environmental effects
-  enviro <- paste("mean_temp_roms_30_norm + I(mean_temp_roms_30_norm^2) + mean_oxygen_roms_30_norm + I(mean_oxygen_roms_30_norm^2)")
+  enviro <- paste("thetao_norm + I(thetao_norm^2) + o2_norm + I(o2_norm^2)")
   # wiggly environmental relationships?
-  enviro <- ifelse(env_spline, paste0("s(mean_temp_roms_30_norm,k=",spline_k,") + ",
-                                      "s(mean_oxygen_roms_30_norm,k=",spline_k,")"),
+  enviro <- ifelse(env_spline, paste0("s(thetao_norm,k=",spline_k,") + ",
+                                      "s(o2_norm,k=",spline_k,")"),
                    enviro)
   # if depth effect, add to model formla
   if(use_depth) {
@@ -442,55 +442,45 @@ plot_all_env_relationships <- function(m){
 }
 ```
 
-# Functions for Projection
+# Functions for Prediction
 
-## Single Model Projection
-
-Function to make predictions for one model, using the "midpoint" environmental data (i.e., the 30 day lag from July 31st). In addition, the model makes a prediction using one the RCP8.5 scenario data from one of the three Earth System Models: Hadley, GFDL, or IPSL.
+## Single Model Prediction (RCAs)
 
 ```{r}
-# give the function a model object from sdmTMB, and a global climate model, either 'hadl','gfdl', 'ipsl'
-make_predictions <- function(modelobj,gcm="hadl"){
+# Build a prediction grid from the RCA base grid
+build_rca_grid_yr <- function(yr,rcas=rca_gr,glorys=glorys_gr){
+  g <- glorys %>% filter(year==yr)
+  out <- rcas %>% 
+    left_join(g,by=join_by(gridID_glorys_match==gridID_phy)) %>% 
+    # rename the locaiton variables to align with var names in the model (i.e., lattrawlkm and lontrawlkm)
+    mutate(lattrawl_km=Northing_m/1000,lontrawl_km=Easting_m/1000,depth_trawl=bathy)
+  out
+}
+```
+
+
+Function to make predictions for one model on to the high-resolution RCA grid, using the "midpoint" environmental data (i.e., August GLORYS conditions)
+
+```{r}
+# give the function a model object from sdmTMB
+make_predictions <- function(modelobj,nd){
 
   original_model_data <- modelobj$data
-  # need to use the original (hindcast) environmental data to scale the projected data
-  mean_t <- mean(original_model_data$mean_temp_roms_30,na.rm=T)
-  sd_t <- sd(original_model_data$mean_temp_roms_30,na.rm=T)
-  mean_oxy <- mean(original_model_data$mean_oxygen_roms_30,na.rm=T)
-  sd_oxy <- sd(original_model_data$mean_oxygen_roms_30,na.rm=T)
+  # need to use the original (hindcast) environmental data to appropriately scale the new data
+  mean_t <- mean(original_model_data$thetao,na.rm=T)
+  sd_t <- sd(original_model_data$thetao,na.rm=T)
+  mean_oxy <- mean(original_model_data$o2,na.rm=T)
+  sd_oxy <- sd(original_model_data$o2,na.rm=T)
   mean_depth <- mean(original_model_data$depth_trawl,na.rm=T)
   sd_depth <- sd(original_model_data$depth_trawl,na.rm=T)
   
-  # create a new tibble with the projected data for the chosen gcm
-  newdata <- roms %>% 
-    left_join(hab,by=c("lat","lon")) %>% 
-    drop_na() %>% 
-    mutate(depth_m= -depth_m) %>% 
-    dplyr::select(year,lat,lon,latitude,longitude,prop_hard_mixed,depth_m,contains(paste0("30d_",gcm)))
-  
-  temperature <- newdata %>% dplyr::select(contains('bt')) %>% 
-    set_names('temperature') %>% 
-    mutate(mean_temp_roms_30_norm=(temperature-mean_t)/sd_t)
-  
-  oxygen <- newdata %>% dplyr::select(contains('oxy')) %>% 
-    set_names('oxygen') %>% 
-    mutate(mean_oxygen_roms_30_norm=(oxygen-mean_oxy)/sd_oxy)
-  
-  depth_new <- newdata %>% dplyr::select(contains('depth')) %>% 
-    set_names('depth') %>% 
-    mutate(depth_trawl_norm=(depth-mean_depth)/sd_depth)
+  newdata <- nd %>% 
+    mutate(thetao_norm=(thetao-mean_t)/sd_t) %>% 
+    mutate(o2_norm=(o2-mean_oxy)/sd_oxy) %>% 
+    mutate(depth_trawl_norm=(depth_trawl-mean_depth)/sd_depth) 
 
-  newdata <- newdata %>% 
-    bind_cols(temperature) %>% 
-    bind_cols(oxygen) %>% 
-    bind_cols(depth_new) %>% 
-    dplyr::select(-temperature,-oxygen,-depth) %>%
-    mutate(year=as.double(year))
-  
-  # years to predict
-  yrs <- sort(unique(newdata$year))
   # now we can make the predictions
-  predicted_cpue_km2 <- predict(modelobj,newdata,return_tmb_object=T,extra_time=yrs)
+  predicted_cpue_km2 <- predict(modelobj,newdata,return_tmb_object=T)
   
   predicted_cpue_km2
 }
@@ -583,7 +573,7 @@ ensemble_predictions <- function(model_df,gcm='hadl',nsims=0){
 
 # Visualizing Outputs
 
-After models have been fit and projected using trawl survey and ROMS data, we have a lot of ways to visualize the outputs.
+After models have been fit and projected using trawl survey and GLORYS data, we have a lot of ways to visualize the outputs.
 
 ## Annual Map
 
@@ -961,7 +951,7 @@ plot_depth_distribution2 <- function(multisims_df,start_year=2020,end_year=2100)
 
 ## Distance from Shore
 
-Using data on the distance of each ROMS cell from the coastline, calculate an ensemble weighted "distance from shore centroid" for each 0.1deg latitude band in each year. This function takes as input the ensemble predictions for a species (i.e, the output of `ensemble_predictions`).
+Using data on the distance of each GLORYS cell from the coastline, calculate an ensemble weighted "distance from shore centroid" for each 0.1deg latitude band in each year. This function takes as input the ensemble predictions for a species (i.e, the output of `ensemble_predictions`).
 
 ```{r}
 plot_dist_to_shore <- function(ens_preds,include_legend=T){
@@ -1564,777 +1554,3 @@ save_projection_plots <- function(model_df,gcm='hadl',savedir=here::here('plots'
   toc()
 }
 ```
-
-# Species Overlap Metrics
-
-Overlap metrics based on Carroll et al. (2019). These take the ensemble prediction outputs for two different species, produced by the `ensemble_predictions()` function above. The global index of collocation also requires the center of gravity calculations from `get_cog(what='df')`.
-
-## Schoener's D
-
-```{r}
-#Schoener's D
-schoeners <- function(dat1, dat2) {
-  p1 <- dat1$ens_est %>% exp()
-  p2 <- dat2$ens_est %>% exp()
-  p_p1 <- p1/sum(p1, na.rm = T)
-  p_p2 <- p2/sum(p2, na.rm = T)
-  1 - 0.5 * (sum(abs(p_p1-p_p2), na.rm = T))
-}
-```
-
-## Local Index of Collocation
-
-```{r}
-lic <- function(dat1,dat2) {
-  p1 <- dat1$ens_est %>% exp()
-  p2 <- dat2$ens_est %>% exp()
-  p_p1 <- p1/sum(p1, na.rm = T)
-  p_p2 <- p2/sum(p2, na.rm = T)
-  sum(p_p1*p_p2, na.rm = T)/(sqrt(sum(p_p1^2, na.rm = T)*sum(p_p2^2, na.rm = T)))
-}
-
-# if you want the metric to be spatial (grid-scale)
-lic_grid <- function(dat1,dat2) {
-  p1 <- dat1$ens_est %>% exp()
-  p2 <- dat2$ens_est %>% exp()
-  p_p1 <- p1/sum(p1, na.rm = T)
-  p_p2 <- p2/sum(p2, na.rm = T)
-  lic_vec <- (p_p1*p_p2)/(sqrt(sum(p_p1^2)*sum(p_p2^2)))
-  lic_vec
-}
-```
-
-```{r,eval=F}
-# relationship between LIC and D?
-test <- crossing(k=seq(0,1000,length.out = 100),j=seq(0,1000,length.out = 100)) %>%
-  mutate(pk=k/sum(k),pj=j/sum(j)) %>% 
-  mutate(L=(pk*pj)/(sqrt(sum(pk^2)*sum(pj^2)))) %>% 
-  mutate(Dpart=abs(pk-pj),D=1-0.5*Dpart)
-
-licp <- test %>%
-  ggplot(aes(k,j,fill=L))+
-  geom_raster()+
-  coord_equal()+
-  scale_fill_viridis(option="A")+
-  theme(legend.position = 'left',
-        legend.text=element_text(size=10))
-Dp <- test %>%
-  ggplot(aes(k,j,fill=D))+
-  geom_raster()+
-  coord_equal()+
-  scale_fill_viridis(option="A")+
-  theme(legend.position = 'right',
-        legend.text=element_text(size=10))
-lic_d_plot <- plot_grid(licp,Dp,nrow=1)
-
-# part 2
-licp2 <- test %>% 
-  filter(j==sort(unique(test$j))[50]) %>% 
-  ggplot(aes(k,L))+
-  geom_line()+
-  annotate('text',x=200,y=0.000125,label="j=500",size=5)
-Dp2 <- test %>% 
-  filter(j==sort(unique(test$j))[50]) %>% 
-  ggplot(aes(k,D))+
-  geom_line()+
-  annotate('text',x=200,y=0.99999,label="j=500",size=5)
-lic_d_plot2 <- plot_grid(licp2,Dp2,nrow=1)
-lic_d_plots <- plot_grid(lic_d_plot,lic_d_plot2,nrow=2,labels='auto')
-# ggsave(here('model output','dts paper','lic_d_comparison.png'),lic_d_plots,w=8,h=6)
-```
-
-
-## Global Index of Collocation
-
-```{r}
-gic <- function(dat1,dat2,cog1,cog2){
-  k_x <- dat1$longitude
-  k_y <- dat1$latitude
-  k <- dat1$ens_est %>% exp()
-  k_cogx <- cog1$w.est_x
-  k_cogy <- cog1$w.est_y
-  j_x <- dat2$longitude
-  j_y <- dat2$latitude
-  j <- dat2$ens_est %>% exp()
-  j_cogx <- cog2$w.est_x
-  j_cogy <- cog2$w.est_y
-  
-  k_ix <- k_x-k_cogx
-  k_iy <- k_y-k_cogy
-  k_i <- sqrt(k_ix^2+k_iy^2)
-  k_inert <- sum(k*(k_i^2),na.rm=T)/sum(k,na.rm=T)
-  
-  j_ix <- j_x-j_cogx
-  j_iy <- j_y-j_cogy
-  j_i <- sqrt(j_ix^2+j_iy^2)
-  j_inert <- sum(j*(j_i^2),na.rm=T)/sum(j,na.rm=T)
-  
-  GIC <- (((k_cogx - j_cogx)^2+(k_cogy - j_cogy)^2)/ (((k_cogx-j_cogx)^2+(k_cogy-j_cogy)^2)+k_inert + j_inert))
-  if(!is.na(GIC))
-    GIC <- 1-GIC
-  else GIC <- 1
-  GIC
-}
-```
-
-# Fishing Footprints
-
-Calculate an ensemble CPUE density timeseries within particular port-based fishing footprints for the DTS trawl fleet. 
-
-```{r}
-calc_footprint_dens_ts <- function(ens_preds,fp=footprints,what="plot"){
-  d <- ens_preds %>% 
-    filter(year>2019) %>% 
-    mutate(est=exp(ens_est)) %>%
-    # mutate(est=exp(ens_est)) %>%
-    st_as_sf(coords=c("longitude","latitude"),crs="+proj=utm +zone=10 +datum=WGS84 +units=km") %>% 
-    st_join(footprints) %>% 
-    st_set_geometry(NULL) %>% 
-    filter(!is.na(port_name)) %>% 
-    group_by(port_name,year) %>% 
-    summarise(mean_cpue=mean(est,na.rm=T)) %>% 
-    ungroup() %>% 
-    mutate(mean_log_cpue=log(mean_cpue))
-  if(what=="plot"){
-    out <- d %>% 
-      ggplot(aes(year,mean_log_cpue,col=port_name))+
-      geom_line(size=1)+
-      # geom_point(size=1)+
-      # geom_smooth(se=F)+
-      scale_color_npg()+
-      labs(x="Year",y="Log CPUE (kg per sq. km)",col="Port Group")
-      # theme(legend.position = "bottom")
-  } else {out = d}
-  
-  out
-}
-
-# Could also calculate a relative change timeseries (% change from 2020 baseline)
-calc_footprint_reldens_ts <- function(ens_preds,fp=footprints,what="plot"){
-  d <- ens_preds %>% 
-    filter(year>2019) %>% 
-    mutate(est=exp(median_est)) %>%
-    # mutate(est=exp(ens_est)) %>%
-    st_as_sf(coords=c("longitude","latitude"),crs="+proj=utm +zone=10 +datum=WGS84 +units=km") %>% 
-    st_join(footprints) %>% 
-    st_set_geometry(NULL) %>% 
-    filter(!is.na(port_name)) %>% 
-    group_by(port_name,year) %>% 
-    summarise(mean_cpue=mean(est,na.rm=T)) %>% 
-    # measure the difference from 2020 baseline
-    ungroup() %>% 
-    group_by(port_name) %>% 
-    mutate(perc_change=(mean_cpue/mean_cpue[year==2020]*100-100)) %>% 
-    ungroup()
-  if(what=="plot"){
-    out <- d %>% 
-      ggplot(aes(year,perc_change,col=port_name))+
-      geom_line(size=1)+
-      # geom_point(size=1)+
-      # geom_smooth(se=F)+
-      scale_color_npg()+
-      labs(x="Year",y="CPUE Change Relative to 2020 (%)",col="Port Group")
-      # theme(legend.position = "bottom")
-  } else {out = d}
-  
-  out
-}
-```
-
-Can also use the footprints combined with `lic_grid` to calculate a similar timeseries for the value of the overlap index within fishing footprints over time.
-
-```{r}
-calc_footprint_overlap_ts <- function(ens1,ens2,fp=footprints){
-  ens1l <- ens1 %>% group_split(year)
-  ens2l<- ens2 %>% group_split(year)
-  lic_vec <- purrr::map2(ens1l,ens2l,lic_grid) %>% unlist()
-  overlap_ts <- ens1 %>% 
-    dplyr::select(-ens_est) %>% 
-    mutate(lic=lic_vec) %>% 
-    # mutate(est=exp(ens_est)) %>%
-    st_as_sf(coords=c("longitude","latitude"),crs="+proj=utm +zone=10 +datum=WGS84 +units=km") %>% 
-    st_join(footprints) %>% 
-    st_set_geometry(NULL) %>% 
-    filter(!is.na(port_name)) %>% 
-    group_by(port_name,year) %>% 
-    summarise(sum_lic=sum(lic,na.rm=T)) %>% 
-    ungroup()
-  
-  overlap_ts
-}
-```
-
-# Functions for Multiple Simulations
-
-We ran sdmTMB models and projected them under multiple future climate scenarios, as well as produced 100 simulations, varying parameter values by pulling randomly from the model's joint precision matrix. These functions are to produce figures based on these multiple simulations
-
-## Distance to Shore Change
-```{r}
-calc_rel_dist_to_shore <- function(sims_df){
-  
-  d <- sims_df %>% 
-    left_join(roms_dist_to_coast,by=c("longitude","latitude")) %>% 
-    group_by(esm,year,lat) %>% 
-    summarise(across(contains("sim"),function(x) sum(exp(x)/sum(exp(x))*km_to_coast))) %>% 
-    ungroup() %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='dist')
-}
-```
-
-## Depth Change
-
-Fraction less than 700 meters over time
-
-```{r}
-calc_depth_frac <- function(sims_df,start_year=2020,end_year=2100){
-  
-  d <- sims_df %>% 
-    filter(year>=start_year,year<=end_year) %>%
-    rename(depth=depth_m) %>% 
-    mutate(is_deep=depth < -1280) %>% 
-    mutate(across(contains('sim'),exp)) %>% 
-    group_by(esm,year) %>% 
-    summarise(across(contains('sim'),function(x)sum(x[!is_deep]/sum(x)))) %>%
-    ungroup() %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='frac')
-  
-}
-```
-
-Difference in cumulative depth distribution
-
-```{r}
-plot_depth_distribution_sims <- function(ens_preds,histyrs=1985:2010,futyrs=2075:2100){
-  yhist <- ens_preds %>% 
-    filter(year %in% histyrs) %>%
-    mutate(cpue=exp(median_est),cpue5=exp(est5),cpue95=exp(est95)) %>% 
-    rename(depth=depth_m) %>% 
-    group_by(depth) %>% 
-    summarise(cpue=mean(cpue,na.rm=T),
-              cpue5=mean(cpue5,na.rm=T),
-              cpue95=mean(cpue95,na.rm=T)) %>% 
-    ungroup() %>%
-    # group_by(year) %>%
-    mutate(prop_cpue=cpue/sum(cpue,na.rm=T),
-           prop_cpue5=cpue5/sum(cpue5,na.rm=T),
-           prop_cpue95=cpue95/sum(cpue95,na.rm=T)) %>%
-    arrange(desc(depth)) %>%
-    mutate(cum_cpue=cumsum(prop_cpue),
-           cum_cpue5=cumsum(prop_cpue5),
-           cum_cpue95=cumsum(prop_cpue95)) %>%
-    ungroup() %>%
-    mutate(period="1985-2010")
-  
-  yfut <- ens_preds %>% 
-    filter(year %in% futyrs) %>%
-    mutate(cpue=exp(median_est),cpue5=exp(est5),cpue95=exp(est95)) %>% 
-    rename(depth=depth_m) %>% 
-    group_by(depth) %>% 
-    summarise(cpue=mean(cpue,na.rm=T),
-              cpue5=mean(cpue5,na.rm=T),
-              cpue95=mean(cpue95,na.rm=T)) %>% 
-    ungroup() %>%
-    # group_by(year) %>% 
-    mutate(prop_cpue=cpue/sum(cpue,na.rm=T),
-           prop_cpue5=cpue5/sum(cpue5,na.rm=T),
-           prop_cpue95=cpue95/sum(cpue95,na.rm=T)) %>%
-    arrange(desc(depth)) %>%
-    mutate(cum_cpue=cumsum(prop_cpue),
-           cum_cpue5=cumsum(prop_cpue5),
-           cum_cpue95=cumsum(prop_cpue95)) %>%
-    ungroup() %>%
-    mutate(period="2075-2100")
-  
-  y <- bind_rows(yhist,yfut)
-  
-  y %>% 
-    ggplot(aes(depth,cum_cpue,ymax=cum_cpue95,ymin=cum_cpue5,col=period,fill=period))+
-    geom_ribbon(alpha=0.5)+
-    geom_line(size=1)+
-    xlim(-2000,0)+
-    # 700 fathom line
-    geom_vline(xintercept=-1280.16,linetype=2)+
-    coord_flip()+
-    guides(color='none',fill='none')+
-    scale_color_manual(values=c("#2271B2","#d55e00"))+
-    scale_fill_manual(values=c("#2271B2","#d55e00"))+
-    labs(x="Depth (m)",y="Cumulative Proportion",title="",col="Period",fill="Period")
-}
-```
-
-## Index of Abundance and Center of Gravity
-
-Index with `get_index_sims`
-
-```{r}
-make_index_sims <- function(model_df,gcm="hadl",nsims=100){
-  # tic('projecting ensemble model.')
-  # use the first model in the list to pull out the data
-  original_model_data <- model_df %>% pluck('model',1,'data')
-  # need to use the original (hindcast) environmental data to scale the projected data
-  mean_t <- mean(original_model_data$mean_temp_roms_30,na.rm=T)
-  sd_t <- sd(original_model_data$mean_temp_roms_30,na.rm=T)
-  mean_oxy <- mean(original_model_data$mean_oxygen_roms_30,na.rm=T)
-  sd_oxy <- sd(original_model_data$mean_oxygen_roms_30,na.rm=T)
-  
-  # create a new tibble with the projected data for the chosen gcm
-  newdata <- roms %>% 
-    left_join(hab,by=c("lat","lon")) %>% 
-    drop_na() %>% 
-    dplyr::select(year,lat,lon,latitude,longitude,prop_hard_mixed,depth_m,contains(paste0("30d_",gcm)))
-  
-  temperature <- newdata %>% dplyr::select(contains('bt')) %>% 
-    set_names('temperature') %>% 
-    mutate(mean_temp_roms_30_norm=(temperature-mean_t)/sd_t)
-  
-  oxygen <- newdata %>% dplyr::select(contains('oxy')) %>% 
-    set_names('oxygen') %>% 
-    mutate(mean_oxygen_roms_30_norm=(oxygen-mean_oxy)/sd_oxy)
-
-  newdata <- newdata %>% 
-    bind_cols(temperature) %>% 
-    bind_cols(oxygen) %>% 
-    dplyr::select(-temperature,-oxygen) %>%
-    mutate(year=as.double(year))
-  
-  # years to predict
-  yrs <- sort(unique(newdata$year))
-  
-  # model weights
-  w <- model_df %>% pluck('weight')
-  if(all(is.na(w))) w = rep(1,length(w))
-  
-  model_list <- model_df %>% pluck('model')
-  
-  # make the predictions for all 4 models
-  set.seed(41389) # for reproducibility and consistency
-  all_predictions <- purrr::map2_df(model_list,w,function(m,weight){
-    # 10 sims = 25s; 50 sims = 50s; 100 sims= 65s
-    # apply the model weight to ALL simulations
-    # preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims)*weight
-    preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims)
-    inds <- get_index_sims(preds) %>% mutate(wt=weight)
-    inds
-  })
-  
-  out <- all_predictions %>% 
-    group_by(year) %>%
-    summarise(wtd.log_est=wtd.mean(log_est,weights=wt),
-              wtd.se_est=wtd.mean(se,weights=wt)) %>% 
-    mutate(esm=toupper(gcm)) %>% 
-    mutate(l1=lag(wtd.log_est,1),
-           l2=lag(wtd.log_est,2),
-           l3=lag(wtd.log_est,3),
-           l4=lag(wtd.log_est,4),
-           l5=lag(wtd.se_est,5),
-           lse1=lag(wtd.se_est,1),
-           lse2=lag(wtd.se_est,2),
-           lse3=lag(wtd.se_est,3),
-           lse4=lag(wtd.se_est,4),
-           lse5=lag(wtd.se_est,5)) %>% 
-    mutate(wtd.log_est_smooth=(l1+l2+l3+l4+l5)/5,
-           wtd.se_est_smooth=(lse1+lse2+lse3+lse4+lse5)/5) %>% 
-    dplyr::select(year,esm,wtd.log_est_smooth,wtd.se_est_smooth)
-  
-  out  
-  # all_predictions <- purrr::map2(model_list,w,function(m,weight){
-  #   # 10 sims = 25s; 50 sims = 50s; 100 sims= 65s
-  #   # apply the model weight to ALL simulations
-  #   # preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims)*weight
-  #   preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims)
-  #   inds <- get_index_sims(preds) %>% 
-  #   preds
-  # }) %>%
-  #   # then add them at the end
-  #   reduce(`+`) %>% 
-  # # reform back into a dataframe and add identifiers from newdata
-  #   as_tibble(.name_repair='minimal') %>% set_names(paste0('sim',1:100))
-  # ens_preds <- newdata %>% 
-  #   dplyr::select(year,longitude,latitude,lat,lon,depth_m) %>% 
-  #   bind_cols(all_predictions) %>% 
-  #   mutate(esm=gcm)
-  # # toc()
-  # }
-  # # For 4 models, with 100 sims, took ~300s or about 5 minutes
-  # toc()
-  # ens_preds
-}
-```
-
-
-## Overlap Metrics
-
-GIC, with simplified COG because for some reason `sdmTMB::get_cog()` takes forever.
-
-```{r}
-# calc_simple_cog <- function(sims_df){
-#  out <- sims_df %>% 
-#    group_by(year,esm) %>% 
-#    summarise(across(contains('sim'),list(
-#      cogx=function(x)sum(exp(x)/sum(exp(x))*longitude),
-#      cogy=function(x)sum(exp(x)/sum(exp(x))*latitude)
-#    ))) %>% 
-#    ungroup() %>% 
-#    pivot_longer(contains("sim"),names_to='sim',values_to='cog_km') %>% 
-#    tidyr::separate(sim,c('sim','direction'),sep="_") %>% 
-#    mutate(sim=str_remove(sim,'sim') %>% as.integer,
-#           direction=str_remove(direction,'cog'))
-#  out
-# }
-
-calc_gic <- function(yr,d1,d2,cog1x,cog1y,cog2x,cog2y){
-  k_x <- d1$longitude
-  k_y <- d1$latitude
-  k <- d1$ens_est %>% exp()
-  k_cogx <- cog1x
-  k_cogy <- cog1y
-  j_x <- d2$longitude
-  j_y <- d2$latitude
-  j <- d2$ens_est %>% exp()
-  j_cogx <- cog2x
-  j_cogy <- cog2y
-  
-  k_ix <- k_x-k_cogx
-  k_iy <- k_y-k_cogy
-  k_i <- sqrt(k_ix^2+k_iy^2)
-  k_inert <- sum(k*(k_i^2),na.rm=T)/sum(k,na.rm=T)
-  
-  j_ix <- j_x-j_cogx
-  j_iy <- j_y-j_cogy
-  j_i <- sqrt(j_ix^2+j_iy^2)
-  j_inert <- sum(j*(j_i^2),na.rm=T)/sum(j,na.rm=T)
-  
-  GIC <- (((k_cogx - j_cogx)^2+(k_cogy - j_cogy)^2)/ (((k_cogx-j_cogx)^2+(k_cogy-j_cogy)^2)+k_inert + j_inert))
-  if(!is.na(GIC))
-    GIC <- 1-GIC
-  else GIC <- 1
-  GIC
-}
-```
-
-```{r}
-gic_sims <- function(sims_df1,sims_df2,gcm,simnum){
-  
-  simname=paste0('sim',simnum)
-  dat1=sims_df1 %>% 
-    filter(esm==gcm) %>% 
-    dplyr::select(year,longitude,latitude,all_of(simname)) %>% 
-    rename(ens_est=4)
-  
-  dat2=sims_df2 %>% 
-    filter(esm==gcm) %>% 
-    dplyr::select(year,longitude,latitude,all_of(simname)) %>% 
-    rename(ens_est=4)
-  
-  c1 = dat1 %>% 
-    group_by(year) %>% 
-    summarise(cog1x=sum(exp(ens_est)/sum(exp(ens_est))*longitude),
-              cog1y=sum(exp(ens_est)/sum(exp(ens_est))*latitude)) %>% 
-    ungroup()
-  
-  c2 = dat2 %>% 
-    group_by(year) %>% 
-    summarise(cog2x=sum(exp(ens_est)/sum(exp(ens_est))*longitude),
-              cog2y=sum(exp(ens_est)/sum(exp(ens_est))*latitude)) %>% 
-    ungroup()
-  
-  datboth=dat1 %>% nest(d1=c(longitude,latitude,ens_est)) %>% 
-    left_join(dat2 %>% nest(d2=c(longitude,latitude,ens_est)),by='year') %>% 
-    left_join(c1,by='year') %>% 
-    left_join(c2,by='year') %>% 
-    rename(yr=year)# rename to match naming convention
-  
-  gic_out <- purrr::pmap_dbl(datboth,calc_gic)
-  
-  gic_out
- 
-}
-```
-
-L, local index of collocation
-
-```{r}
-lic_D_sims <- function(sims_df1,sims_df2){
-  
-  p1 <- sims_df1 %>%
-    group_by(year,esm) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p1') %>% 
-    dplyr::select(year,esm,longitude,latitude,sim,p_p1) %>% 
-    ungroup()
-  
-  p2 <- sims_df2 %>%
-    group_by(year,esm) %>%
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p2') %>% 
-    dplyr::select(year,esm,longitude,latitude,sim,p_p2) %>% 
-    ungroup()
-  
-  pjoint <- p1 %>% 
-    left_join(p2,by=c('year','esm','longitude','latitude','sim')) %>% 
-    group_by(year,esm,sim) %>% 
-    summarise(lic=sum(p_p1*p_p2, na.rm = T)/(sqrt(sum(p_p1^2, na.rm = T)*sum(p_p2^2, na.rm = T))),
-              D= 1 - 0.5 * (sum(abs(p_p1-p_p2), na.rm = T))) %>% 
-    ungroup()
-  
-  pjoint
-
-}
-```
-
-## Fishing Footprints
-
-```{r}
-calc_footprint_dens_sims <- function(ens_preds,fp=footprints){
-  d <- ens_preds %>%
-    filter(year>2019) %>%
-    mutate(est=purrr::map(data,exp)) %>%
-    # mutate(est=exp(ens_est)) %>%
-    st_as_sf(coords=c("longitude","latitude"),crs="+proj=utm +zone=10 +datum=WGS84 +units=km") %>%
-    st_join(footprints) %>%
-    st_set_geometry(NULL) %>%
-    filter(!is.na(port_name)) %>%
-    group_by(port_name,year) %>%
-    summarise(mean_cpue=purrr::map_dbl(est,mean),
-              cpue5=purrr::map_dbl(est,quantile,probs=0.05),
-              cpue95=purrr::map_dbl(est,quantile,probs=0.95),
-              mean_log_cpue=purrr::map_dbl(data,mean),
-              log_cpue5=purrr::map_dbl(data,quantile,probs=0.05),
-              log_cpue95=purrr::map_dbl(data,quantile,probs=0.95)) %>%
-    ungroup() %>% 
-    group_by(port_name,year) %>%
-    summarise(mean_cpue=mean(mean_cpue),
-              cpue5=mean(cpue5),
-              cpue95=mean(cpue95),
-              mean_log_cpue=mean(mean_log_cpue),
-              log_cpue5=mean(log_cpue5),
-              log_cpue95=mean(log_cpue95)) %>% 
-    ungroup()
-    
-  d
-}
-
-# Could also calculate a relative change timeseries (% change from 2020 baseline)
-calc_footprint_reldens_sims <- function(sims_df,fp=footprints){
- d <- sims_df %>%
-   left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-   filter(!is.na(port_name)) %>%
-   group_by(year,port_name,esm) %>% 
-   summarise(across(contains('sim'),function(x) mean(exp(x)))) %>%
-   pivot_longer(contains('sim'),names_to='sim',values_to='cpue_fp') %>% 
-   ungroup() %>% 
-   dplyr::select(year,esm,port_name,sim,cpue_fp)
- 
-   # historical mean overlap
-  dhist <- d %>% 
-    filter(year%in%c(1985:2010)) %>% 
-    group_by(sim,esm,port_name) %>% 
-    summarise(mean_cpue_hist=mean(cpue_fp)) %>% 
-    ungroup()
-  
-  dfut <- d %>% 
-    filter(year%in%c(2075:2100)) %>% 
-    group_by(sim,esm,port_name) %>% 
-    summarise(mean_cpue_fut=mean(cpue_fp)) %>% 
-    ungroup()
-    
-  d2 <- dhist %>% 
-    left_join(dfut,by=c('sim','port_name','esm')) %>% 
-    mutate(delta=mean_cpue_fut-mean_cpue_hist,
-           delta_perc=delta/mean_cpue_hist*100)
-  
-  # d2<- d %>% 
-  #   filter(year>2019) %>% 
-  #   left_join(dhist,by=c("port_name","sim")) %>% 
-  #   mutate(delta_cpue=cpue_fp-mean_cpue_hist,
-  #          delta_cpue_perc=delta_cpue/mean_cpue_hist*100) %>% 
-  #   ungroup()
-  
-  d2
-}
-```
-
-Can also use the footprints combined with `lic_grid` to calculate a similar timeseries for the value of the overlap index within fishing footprints over time.
-
-```{r}
-lic_D_fps <- function(sims_df1,sims_df2,fp=footprints,gcm='ipsl'){
-  
-  p1 <- sims_df1 %>%
-    filter(esm==gcm) %>% 
-    group_by(year) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    #join fps
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p1') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p1) %>% 
-    ungroup()
-  
-  p2 <- sims_df2 %>%
-    filter(esm==gcm) %>% 
-    group_by(year) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    #join fps
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p2') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p2) %>% 
-    ungroup()
-  
-  pjoint <- p1 %>% 
-    left_join(p2,by=c('year','esm','port_name','longitude','latitude','sim')) %>% 
-    group_by(port_name,year,esm,sim) %>% 
-    summarise(lic=sum(p_p1*p_p2)/sqrt(sum(p_p1^2*sum(p_p2^2))),
-           D= 1 - 0.5*sum(abs(p_p1-p_p2))) %>% 
-    ungroup()
-  
-  # historical mean overlap
-  phist <- pjoint %>% 
-    filter(year%in%c(1985:2010)) %>% 
-    group_by(port_name,sim) %>% 
-    summarise(meanD=mean(D),
-              meanL=mean(lic)) %>% 
-    ungroup()
-  
-  pdelta<- pjoint %>% 
-    filter(year>2019) %>% 
-    left_join(phist,by=c("port_name","sim")) %>% 
-    mutate(deltaD=D-meanD,
-           deltaL=lic-meanL) %>% 
-    ungroup()
-  
-  pdelta
-}
-```
-
-Wrap the above for all 3 ESMs, and calculate the number of simulations with positive change (i.e., an increase in overlap relative to the historical baseline)
-```{r}
-LIC_D_prop_change <- function(df1,df2){
-  df <- purrr::map_df(c('gfdl','hadl','ipsl'),lic_D_fps,sims_df1=df1,sims_df2=df2,fp=footprints)
-  df_out <- df %>% 
-    mutate(Dplus=deltaD>0,Lplus=deltaL>0) %>% 
-    group_by(port_name,year,esm) %>% 
-    summarise(D_prop=sum(Dplus),
-              L_prop=sum(Lplus),
-              D_meanchange=mean(deltaD),
-              L_meanchange=mean(deltaL)) %>% 
-    ungroup()
-  df_out
-}
-
-LIC_D_mean_change <- function(df1,df2){
-  df <- purrr::map_df(c('gfdl','hadl','ipsl'),lic_D_fps,sims_df1=df1,sims_df2=df2,fp=footprints)
-  df_out <- df %>% 
-    filter(year %in% 2075:2100) %>% 
-    group_by(port_name,esm) %>% 
-    summarise(D_mean=mean(deltaD),
-              L_mean=mean(deltaL),
-              D_sd=sd(deltaD),
-              L_sd=sd(deltaL)) %>% 
-    ungroup()
-  df_out
-}
-```
-
-Biomass-weighted overlap
-
-```{r}
-bwo_sims <- function(sims_df1,sims_df2){
-  
-  p1 <- sims_df1 %>%
-    group_by(year,esm) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/max(exp(x),na.rm=T))) %>%
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='s_p1') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,s_p1) %>% 
-    ungroup()
-  
-  p2 <- sims_df2 %>%
-    group_by(year,esm) %>%
-    mutate(across(contains('sim'),function(x) exp(x)/max(exp(x),na.rm=T))) %>% 
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='s_p2') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,s_p2) %>% 
-    ungroup()
-  
-  pjoint <- p1 %>% 
-    left_join(p2,by=c('year','esm','longitude','latitude','port_name','sim')) %>% 
-    group_by(year,esm,port_name,sim) %>% 
-    summarise(bwo=sum(s_p1*s_p2)/sum(s_p2)) %>% 
-    ungroup()
-  
-  pjoint
-
-}
-```
-
-Bhattacharyya's 
-
-```{r}
-bhat_sims <- function(sims_df1,sims_df2){
-  
-  p1 <- sims_df1 %>%
-    group_by(year,esm) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>%
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p1') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p1) %>% 
-    ungroup()
-  
-  p2 <- sims_df2 %>%
-    group_by(year,esm) %>%
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p2') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p2) %>% 
-    ungroup()
-  
-  pjoint <- p1 %>% 
-    left_join(p2,by=c('year','esm','longitude','latitude','port_name','sim')) %>% 
-    group_by(year,esm,port_name,sim) %>% 
-    summarise(bhat=sum(sqrt(p_p1*p_p2))) %>% 
-    ungroup()
-  
-  pjoint
-
-}
-```
-
-Asymmetrical alpha
-
-```{r}
-aa_sims <- function(sims_df1,sims_df2){
-  
-  p1 <- sims_df1 %>%
-    group_by(year,esm) %>% 
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>%
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p1') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p1) %>% 
-    ungroup()
-  
-  p2 <- sims_df2 %>%
-    group_by(year,esm) %>%
-    mutate(across(contains('sim'),function(x) exp(x)/sum(exp(x),na.rm=T))) %>% 
-    left_join(roms_ports_match,by=c('latitude','longitude')) %>% 
-    filter(!is.na(port_name)) %>% 
-    pivot_longer(contains('sim'),names_to='sim',values_to='p_p2') %>% 
-    dplyr::select(year,esm,port_name,longitude,latitude,sim,p_p2) %>% 
-    ungroup()
-  
-  pjoint <- p1 %>% 
-    left_join(p2,by=c('year','esm','longitude','latitude','port_name','sim')) %>% 
-    group_by(year,esm,port_name,sim) %>% 
-    summarise(aa=sum(p_p1*p_p2)/sqrt(sum(p_p2^2))) %>% 
-    ungroup()
-  
-  pjoint
-
-}
-```
-
