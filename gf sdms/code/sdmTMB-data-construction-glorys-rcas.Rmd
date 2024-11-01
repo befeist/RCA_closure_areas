@@ -422,20 +422,35 @@ write_rds(trawl_glorys_joined,here('gf sdms','data','trawl_glorys_joined.rds'))
 Also make a version of this that is for projection. For now, make only 1 annual prediction, so use August conditions
 
 ```{r}
+trawl_sf <- trawl_glorys_joined %>% st_as_sf(coords=c("lontrawlUTM","lattrawlUTM"),crs=26910)
 # make a buffered outline of the trawl data using fmesher package
-dat_buffer <- fm_nonconvex_hull(dat_sf,
+dat_buffer <- fmesher::fm_nonconvex_hull(trawl_sf,
                                 concave = -0.025,
                                 convex = -0.025)
 # crop this buffer so it doesn't overlap the coast
-dat_buffer <- st_difference(dat_buffer,summarise(coast))
+dat_buffer <- st_difference(dat_buffer,summarise(coast %>% st_transform(26910)))
 
 # plot it on top of what we just mapped
 ggplot()+
   # spatial geom for maps
-  geom_sf(data=dat_sf,aes(size=cpuelt))+
+  geom_sf(data=trawl_sf %>% sample_n(10000))+
   geom_sf(data=coast,fill='gray20')+
-  geom_sf(data=dat_buffer,fill=NA,color='red')+
-  facet_wrap(~size.cat)
+  geom_sf(data=dat_buffer,fill=NA,color='red')
+
+# GLORYS cells that touch this buffer
+glorys_trawl_filt <- glorys_phy_grid %>% 
+  mutate(lonUTM_m=lonUTM*1000,latUTM_m=latUTM*1000) %>% 
+  st_as_sf(coords=c("lonUTM_m","latUTM_m"),crs=26910) %>% 
+  st_filter(dat_buffer)
+
+# plot again
+ggplot()+
+  # spatial geom for maps
+  geom_sf(data=glorys_trawl_filt,color="blue",size=0.5)+
+  geom_sf(data=coast,fill='gray20')+
+  geom_sf(data=dat_buffer,fill=NA,color='red')
+
+glorys_incl_cells=glorys_trawl_filt$gridID_phy
 ```
 
 
@@ -479,7 +494,10 @@ make_glorys_proj_grid<- function(yr){
   
   # clean up columns and finish
   out <- glorys_yr_proj %>% 
-    drop_na()
+    drop_na() %>% 
+  
+  # crop- only cells that overlap with the buffer created in the last step
+  filter(gridID_phy%in%glorys_incl_cells)
     
   out
 }
@@ -494,7 +512,7 @@ glorys_pred_grid <- purrr::map(2003:2020,make_glorys_proj_grid) %>% list_rbind()
 Visualize
 
 ```{r}
-glorys_pred_grid %>% filter(year==2003) %>% ggplot(aes(lonUTM,latUTM,color=thetao))+geom_point()+coord_equal()+scale_color_viridis()
+glorys_pred_grid %>% filter(year==2003) %>% ggplot(aes(lonUTM,latUTM,color=thetao))+geom_point(size=0.5)+coord_equal()+scale_color_viridis()
 ```
 
 ## Save

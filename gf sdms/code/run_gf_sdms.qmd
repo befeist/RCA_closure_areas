@@ -49,9 +49,7 @@ rca_mask <- rast(here('gf sdms','data','rca_raster_mask.tif'))
 # Tests
 
 ```{r}
-m <- run_sdmTMB(trawl,spp="canary rockfish",use_depth=F,include_substrate = F)
-
-m <- run_sdmTMB(trawl,spp="pacific hake",use_depth=T)
+m <- run_sdmTMB_cv(trawl,spp="canary rockfish",use_depth=F,spatial_field = F,include_substrate = F,return_what = "model")
 ```
 
 ```{r,fig.width=10,fig.height=12}
@@ -63,8 +61,9 @@ glorys_hake <- make_predictions(m,nd=glorys_pred_df)
 glorys_hake <- glorys_hake$data %>% st_as_sf(coords=c("lonUTM","latUTM"),crs=26910)
 
 glorys_hake %>% 
+  filter(est>-2) %>% 
   ggplot(aes(color=est))+
-  geom_sf(size=0.3)+
+  geom_sf(size=0.5)+
   scale_color_viridis()+
   facet_wrap(~year)+
   theme_minimal()+

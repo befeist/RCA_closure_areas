@@ -148,8 +148,8 @@ run_sdmTMB_cv <- function(dat,spp,nknots=400,use_depth=F,time_vary=F,spatial_fie
   modeldat <- prepare_species(dat,spp=spp)
   
   # make spde
-  spde <- make_mesh(modeldat,xy_cols = c('longitude','latitude'), 
-                   cutoff = 20)
+  spde <- make_mesh(modeldat,xy_cols = c('lontrawl_km','lattrawl_km'), 
+                   cutoff = 40)
   
   # model formula
   formula <- paste0("cpue_kg_km2 ~ ")
@@ -224,222 +224,22 @@ run_sdmTMB_cv <- function(dat,spp,nknots=400,use_depth=F,time_vary=F,spatial_fie
 }
 ```
 
-## Model Stacking Function
-
-This function takes a list of models from running the equations, stacks their posterior predictive distributions, and returns appropriate likelihood-based model weights for use in creating ensemble predictions.
-
-```{r}
-sdmTMB_stacking <- function (model_list, include_folds = NULL) 
-{
-    n_models <- length(model_list)
-    if (is.null(include_folds)) {
-        n_folds <- max(model_list[[1]]$data$cv_fold)
-        include_folds <- seq_len(n_folds)
-    }
-    X <- matrix(0, nrow = nrow(model_list[[1]]$data), ncol = n_models)
-    for (i in 1:n_models) X[, i] = model_list[[i]]$data$cv_loglik
-    X <- X[which(model_list[[1]]$data$cv_fold %in% include_folds), 
-        ]
-    X <- exp(X)
-    tot_ll = function(p, X) {
-        z <- matrix(exp(p)/sum(exp(p)), ncol = 1)
-        k <- log(X%*%z)
-        -sum(k[which(!is.infinite(k))])
-    }
-    o <- optim(par = runif(n_models), fn = tot_ll, X = X)
-    weights <- exp(o$par)/sum(exp(o$par))
-    return(weights)
-}
-```
-
-## Model Fitting Wrapper
-
-This final, wrapper function uses the functions above to fit a series of models using `run_sdmTMB`, compare them to one another using `run_sdmTMB_cv` and `sdmTMB_stacking`, and output a nested data frame including all models, their associated options (e.g., inclusion of spatial fields, linear or GAM-type environmental relationships), and importantly, their weights to use in the ensembling of model predictions.
-
-
-```{r}
-model_species <- function(spp,data,use_substrate=T){
-
-  if(!use_substrate) {
-    models_to_run <-crossing(spp,spatial_field=c(F,T),env_spline=c(F,T),include_substrate=F) %>%
-      mutate(model_num=row_number())
-    
-    out <- models_to_run %>% 
-      mutate(model=purrr::pmap(list(spp=spp,spatial_field=spatial_field,env_spline=env_spline,include_substrate=include_substrate),run_sdmTMB,dat=data)) %>%
-      mutate(model_cv=purrr::pmap(list(spp=spp,spatial_field=spatial_field,env_spline=env_spline,include_substrate=include_substrate),run_sdmTMB_cv,dat=data,return_what="model"))
-    
-  } else {
-    models_to_run <- crossing(spp,spatial_field=c(F,T),hab_spline=c(F,T),env_spline=c(F,T)) %>%
-      mutate(model_num=row_number())
-    out <- models_to_run %>% 
-      mutate(model=purrr::pmap(list(spp=spp,spatial_field=spatial_field,hab_spline=hab_spline,env_spline=env_spline),run_sdmTMB,dat=data)) %>%
-      mutate(model_cv=purrr::pmap(list(spp=spp,spatial_field=spatial_field,hab_spline=hab_spline,env_spline=env_spline),run_sdmTMB_cv,dat=data,return_what="model"))
-  }
-  
-  
-  model_weights <- try(sdmTMB_stacking(out$model_cv))
-  if(class(model_weights)=='try-error'){
-    print(paste('Error in model stacking.'))
-    out$weight=NA
-  } else{
-    out$weight=model_weights
-  }
-
-  out
-}
-```
-
 # Model Fit Statistics and Visualization
 
 Functions to visualize and save model fits.
 
-## Model Ensemble Table
-
-```{r}
-report_model_ensemble <- function(model_df){
-  weights_table <- model_df %>% dplyr::select(-model,-model_cv,-include_substrate,-model_num)
-  convergence <- purrr::map_int(model_df$model,function(m){m$model$convergence})
-  weights_table$Convergence <- convergence
-  range_params <- purrr::map_dbl(model_df$model,function(m){
-    tidy(m,effects='ran_pars') %>% slice(1) %>% pull(estimate)
-  })
-  weights_table$sumloglik <- purrr::map_dbl(model_df$model_cv,pluck("sum_loglik"))
-  weights_table$Matern_range <- range_params
-  weights_table
-  # model_params <- purrr::map(model_df$model,tidy,effects=c("fixed"))
-  # knitr::kable(weights_table,digits = 3,col.names = c("Group","Spatial RF","Env Spline","Weight","Convergence","Log density","Matern Range")) %>% print()
-  # purrr::walk(model_params,function(t){knitr::kable(t,digits=3) %>% print()})
-}
-```
 
 ## Normal QQ plot
 
 ```{r}
-make_qq_plots <- function(model_df){
-  spp <- model_df %>% pluck("model",1,'data','species') %>% unique()
-  sppdat <- prepare_species(trawl_roms_utm,spp)
-  
-  qqp <- purrr::map(model_df$model,function(m){
-    r <- residuals(m)[1:nrow(sppdat),1] %>% as_tibble()
-    resids <- sppdat %>% mutate(resid=r$value)
-    qq <- ggplot(resids,aes(sample=resid))+stat_qq()+stat_qq_line()+
-      labs(x="Expected",y="Observed")+coord_equal()+
-      theme(panel.background = element_rect(color='black'))
-    qq
-  })
-  cowplot::plot_grid(plotlist=qqp,nrow=1,labels=c(1:4))
-}
-```
-
-## DHARMAa Residuals
-
-```{r}
-# adopted from Commander et al. shadow model paper
-get_dharma_resid <- function(obj) {
-    sim <- simulate(obj, nsim = 500L)
-    pred_fixed <- obj$family$linkinv(predict(obj, newdata = NULL)$est_non_rf)
-    DHARMa::createDHARMa(
-      simulatedResponse = sim,
-      observedResponse = obj$data$cpue_kg_km2,
-      fittedPredictedResponse = pred_fixed
-    )
-}
-plot_dharma_resid <- function(res, main = "") {
-    gap::qqunif(
-      res$scaledResiduals,
-      pch = 19,
-      bty = "n",
-      logscale = FALSE,
-      col = "#00000010",
-      cex = 0.5,
-      ann = FALSE, xlim = c(0, 1), ylim = c(0, 1)
-    )
-    mtext(side = 3, text = main, line = 0.5, cex = 0.8)
-    mtext(side = 1, line = 2, text = "Expected", cex = 0.8)
-    mtext(side = 2, line = 2, text = "Observed", cex = 0.8)
-    box()
-}
-```
-
-
-## Single Model Environmental Niche
-
-```{r}
-plot_single_env_relationship <- function(fit,predvar="depth_trawl_norm"){
-  
-  # use visreg to do the fit for us
-  x <- visreg(fit=fit,xvar=predvar,scale='response',plot=FALSE)
-  datfit <- x$fit
-  
-  # if the response is not substrate, have to back-transform the predictor variable
-  if(predvar=="prop_hard_mixed"){
-    out = datfit %>% 
-      ggplot(aes(prop_hard_mixed,visregFit,ymax=visregUpr,ymin=visregLwr))+
-      geom_ribbon(fill='gray70')+
-      geom_line()+
-      labs(x=predvar,y="CPUE")+
-      theme(panel.border = element_rect(color='black',fill=NA))
-    
-  } else {
-      # find the mean and SD of the original predictor to back-transform
-      original_predvar = str_sub(predvar,end=-6L)
-      
-      predvar_dat=fit$data %>% dplyr::select(all_of(original_predvar)) %>% pluck(1)
-      mean_predvar <- mean(predvar_dat,na.rm=T)
-      sd_predvar <- sd(predvar_dat,na.rm=T)
-      predvar_trans <- (datfit %>% pluck(predvar))*sd_predvar+mean_predvar
-      
-      # add the transformation to the fitted relationship
-      datfit <- datfit %>% 
-        mutate(envtrans=predvar_trans)
-      
-      # output plot
-      out = datfit %>% 
-        ggplot(aes(envtrans,visregFit,ymax=visregUpr,ymin=visregLwr))+
-        geom_ribbon(fill='gray70')+
-        geom_line()+
-        labs(x=original_predvar,y="CPUE")+
-        theme(panel.border = element_rect(color='black',fill=NA))
+make_qq_plots <- function(m){
+  r <- residuals(m)[1:nrow(sppdat),1] %>% as_tibble()
+  resids <- sppdat %>% mutate(resid=r$value)
+  qq <- ggplot(resids,aes(sample=resid))+stat_qq()+stat_qq_line()+
+    labs(x="Expected",y="Observed")+coord_equal()+
+    theme(panel.background = element_rect(color='black'))
+  qq
   }
-  
-  out
-
-}
-
-```
-
-```{r}
-plot_all_env_relationships <- function(m){
-  
-  form <-m$formula %>% pluck(1) %>% as.character() %>% pluck(3)
-  
-  if(grepl('depth_trawl_norm',form)){
-    depth_relationship <- plot_single_env_relationship(m,predvar="depth_trawl_norm")+
-      labs(x="Depth (m)")
-  } else depth_relationship=NULL
-  
-  if(grepl('prop_hard_mixed',form)){
-    hab_relationship <- plot_single_env_relationship(m,predvar="prop_hard_mixed")+
-      labs(x="Proportion Hard Substrate")
-  } else hab_relationship=NULL
-    
-  if(grepl('temp_roms',form)){
-    temp_relationship <- plot_single_env_relationship(m,predvar="mean_temp_roms_30_norm")+
-      labs(x="Bottom Temperature")
-  } else temp_relationship=NULL
-  
-  if(grepl('mean_oxygen_roms_30_norm',form)){
-    oxy_relationship <- plot_single_env_relationship(m,predvar="mean_oxygen_roms_30_norm")+
-      labs(x="Bottom Oxygen")
-  } else oxy_relationship=NULL
-  
-  if(!grepl('depth_trawl_norm',form) & !grepl('prop_hard_mixed',form)){
-    out <- cowplot::plot_grid(temp_relationship,oxy_relationship,nrow=1)
-  } else{
-    out <- cowplot::plot_grid(temp_relationship,oxy_relationship,depth_relationship,hab_relationship,nrow=2) 
-  }
-  out
-}
 ```
 
 # Functions for Prediction
@@ -486,90 +286,6 @@ make_predictions <- function(modelobj,nd){
 }
 ```
 
-## Ensemble Predictions
-
-To create ensemble predictions, we calculate predictions for each species' model separately, then weight them using the weights established in model fitting (i.e., from `sdmTMB_stacking`). This function takes as input the dataframe result of the `model_species` function above, then makes ensemble predictions using the projections from an ESM of choice (Hadley, GFDL, or IPSL). Returns a dataframe of predicted log CPUE. Importantly, right now this function only handles models that were fit with temperature and oxygen data (and, optionally, spatial random effects), but NOT depth or substrate data.
-
-```{r}
-# this function is meant to be run with a list of models that all are fit on the same data, with a common set of predictors
-# if nsim > 0, simulate from the joint precision matrix to establish uncertainty
-ensemble_predictions <- function(model_df,gcm='hadl',nsims=0){
-  tic('projecting ensemble model.')
-  # use the first model in the list to pull out the data
-  original_model_data <- model_df %>% pluck('model',1,'data')
-  # need to use the original (hindcast) environmental data to scale the projected data
-  mean_t <- mean(original_model_data$mean_temp_roms_30,na.rm=T)
-  sd_t <- sd(original_model_data$mean_temp_roms_30,na.rm=T)
-  mean_oxy <- mean(original_model_data$mean_oxygen_roms_30,na.rm=T)
-  sd_oxy <- sd(original_model_data$mean_oxygen_roms_30,na.rm=T)
-  
-  # create a new tibble with the projected data for the chosen gcm
-  newdata <- roms %>% 
-    left_join(hab,by=c("lat","lon")) %>% 
-    drop_na() %>% 
-    dplyr::select(year,lat,lon,latitude,longitude,prop_hard_mixed,depth_m,contains(paste0("30d_",gcm)))
-  
-  temperature <- newdata %>% dplyr::select(contains('bt')) %>% 
-    set_names('temperature') %>% 
-    mutate(mean_temp_roms_30_norm=(temperature-mean_t)/sd_t)
-  
-  oxygen <- newdata %>% dplyr::select(contains('oxy')) %>% 
-    set_names('oxygen') %>% 
-    mutate(mean_oxygen_roms_30_norm=(oxygen-mean_oxy)/sd_oxy)
-
-  newdata <- newdata %>% 
-    bind_cols(temperature) %>% 
-    bind_cols(oxygen) %>% 
-    dplyr::select(-temperature,-oxygen) %>%
-    mutate(year=as.double(year))
-  
-  # years to predict
-  yrs <- sort(unique(newdata$year))
-  
-  # model weights
-  w <- model_df %>% pluck('weight')
-  if(all(is.na(w))) w = rep(1,length(w))
-  
-  model_list <- model_df %>% pluck('model')
-  
-  # make the predictions for all 4 models
-  set.seed(41389) # for reproducibility and consistency
-  if(nsims==0){
-      all_predictions <- purrr::map2_df(model_list,w,function(m,weight){
-        preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims) %>% 
-        mutate(weight=weight)
-        preds
-    })
-      
-    ens_preds <- all_predictions %>% 
-      group_by(year,longitude,latitude,lat,lon,depth_m) %>% 
-      summarise(ens_est=weighted.mean(est,weight)) %>% 
-      ungroup() %>% 
-      mutate(esm=gcm)
-        
-  } else {
-      # tic('testing times')
-      all_predictions <- purrr::map2(model_list,w,function(m,weight){
-        # 10 sims = 25s; 50 sims = 50s; 100 sims= 65s
-        # apply the model weight to ALL simulations
-        preds <- predict(m,newdata=newdata,return_tmb_object=F,extra_time=yrs,nsim=nsims)*weight
-        preds
-      }) %>%
-        # then add them at the end
-        reduce(`+`) %>% 
-      # reform back into a dataframe and add identifiers from newdata
-        as_tibble(.name_repair='minimal') %>% set_names(paste0('sim',1:100))
-      ens_preds <- newdata %>% 
-        dplyr::select(year,longitude,latitude,lat,lon,depth_m) %>% 
-        bind_cols(all_predictions) %>% 
-        mutate(esm=gcm)
-      # toc()
-  }
-  # For 4 models, with 100 sims, took ~300s or about 5 minutes
-  toc()
-  ens_preds
-}
-```
 
 # Visualizing Outputs
 
