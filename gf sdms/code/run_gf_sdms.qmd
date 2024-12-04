@@ -3,13 +3,15 @@ title: "Groundfish SDMs in RCAs"
 author: "Owen Liu"
 format: html
 editor: visual
+toc: true
+toc-depth: 3
 ---
 
 # Purpose
 
-Run SDMs and project them to a high-resolution grid within historical RCA footprint, to look at overlap
+Run SDMs and project them to a high-resolution grid within historical RCA footprint, to look at overlap. To produce the data inputs for this script, see `sdmTMB-data-construction-glorys-rcas`
 
-```{r}
+```{r,message=F,error=F}
 # Libraries
 library(tidyverse)
 library(sf)
@@ -27,75 +29,1969 @@ library(viridis)
 trawl <- read_rds(here('gf sdms','data','trawl_glorys_joined.rds'))
 ```
 
-
 2. Prediction grids. RCA-specific (high resolution, restricted domain) and basic GLORYS (lower resolution, broader domain)
 
 ```{r}
+# tabular grids with covariate information, for projecting in sdmTMB
 rca_gr <- read_rds(here('gf sdms','data','rca_base_prediction_grid.rds'))
-
 glorys_gr <- read_rds(here('gf sdms','data','glorys_hindcast_grid.rds'))
 
-# this mask just makes all cells outside the RCA footprint into NAs
-rca_mask <- rast(here('gf sdms','data','rca_raster_mask.tif'))
+# grids averaged across 2003-2020 for each grid cell
+mean_glorys_grid<-read_rds(here('gf sdms','data','mean_glorys_prediction_grid.rds'))
+mean_rca_grid<-read_rds(here('gf sdms','data','mean_rca_prediction_grid.rds'))
+
+# rasters for visualization/mapping/saving
+glorys_proj_rast<-rast(here('gf sdms','data','glorys_template_raster.tif'))
+glorys_rast_key<-read_rds(here('gf sdms','data','glorys_proj_raster_key.rds'))
+rca_proj_rast<-rast(here('gf sdms','data','rca_template_raster.tif'))
+rca_rast_key<-read_rds(here('gf sdms','data','rca_proj_raster_key.rds'))
 ```
 
 # Load Functions
 
-```{r}
-# rmarkdown::render(here('gf sdms','code','sdmTMB-rcas-model-functions.Rmd'),quiet=T)
-```
-
-
-# Tests
+These functions are the workhorse of the analysis; includes functions for fitting, projecting, and diagnosing SDMs
 
 ```{r}
-m <- run_sdmTMB_cv(trawl,spp="canary rockfish",use_depth=F,spatial_field = F,include_substrate = F,return_what = "model")
+rmarkdown::render(here('gf sdms','code','sdmTMB-rcas-model-functions.Rmd'),quiet=T)
 ```
 
-```{r,fig.width=10,fig.height=12}
-# test with GLORYS grid
-glorys_pred_df <- glorys_gr %>% 
-  mutate(lontrawl_km=lonUTM,lattrawl_km=latUTM,depth_trawl=depth) %>% 
-  filter(year %in% 2003:2019)
-glorys_hake <- make_predictions(m,nd=glorys_pred_df)
-glorys_hake <- glorys_hake$data %>% st_as_sf(coords=c("lonUTM","latUTM"),crs=26910)
+# Example SDM
 
-glorys_hake %>% 
-  filter(est>-2) %>% 
-  ggplot(aes(color=est))+
-  geom_sf(size=0.5)+
-  scale_color_viridis()+
-  facet_wrap(~year)+
-  theme_minimal()+
-  theme(panel.border = element_rect(color='black',fill=NA))
+The final model for each functional group was chosen from a set of eight candidate models. Each sub-model varies in the assumed functional form of the relationship between predictors and CPUE: models represent the relationship of CPUE with bottom temperature and oxygen as either linear or as a GAM spline. The general model formula, therefore, is:
+
+`cpue ~ +bottom_temperature + I(bottom_temperature^2) + bottom_oxygen +I(bottom_oxygen^2)`
+
+For the “linear” (non-spline) environmental relationships, and:
+
+`cpue~ +s(bottom_temperature, k = 3) + s(bottom_oxygen,k=3)`
+
+For the spline relationships. The `k=3` parameter denotes the maximum allowable “smoothness” of the fitted spline relationship. This spline k parameter is set at 3 for all models. 
+
+Furthermore, the models can include spatial random fields, or not, and can include a quadratic depth effort, or not; this gives us the eight candidate model (turning on or off environmental splines, latent spatial fields, and depth effects). Without spatial random fields, the models reduce to simple GLMs or GAMs. Models were fit with a Tweedie link.
+
+For each model, the data were split into model training (80 percent of the data) and testing (20 percent) sets. After checking for successful convergence, the chosen model is the one with the greatest log-likelihood through cross-validation.
+
+Here is an example of this workflow, before we apply to all the species. We've arbitrarily chosen greenstriped rockfish for the example.
+
+First, run the eight candidate models.
+
+```{r,message=F,warning=F}
+mdf <- model_species(data=trawl,spp="greenstriped rockfish")
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+```
+
+The chosen model for this species is model number 4, that includes a latent spatial field and environmental relationships represented as GAM-like splines. In the standard model summary, we can see the fixed and random effect fits, 
+
+```{r}
+# Summary of the chosen model
+sanity(mdf$best_model)
+summary(mdf$best_model)
+```
+
+Now, using this chosen model, we can plot some diagnostics and then make our predicted maps.
+
+# Diagnostics
+
+## Predicted/Observed
+
+```{r,message=F,warning=F}
+make_pred_obs_plot(mdf$best_model)
+```
+
+## QQ Plot
+
+Here's a QQ plot of the chosen model.
+
+```{r,message=F,warning=F}
+make_qq_plot(mdf$best_model)
+```
+
+## Spatial Residuals
+
+```{r,fig.width=10,fig.height=8,message=F,warning=F}
+spatial_residuals_plot(mdf$best_model)
+```
+
+# Mean Predictions
+
+Predict to the mean RCA grid (fine scale) and the mean GLORYS grid (coarse scale)
+
+```{r}
+pred_coarse <- make_predictions(mdf$best_model,nd=mean_glorys_grid)
+pred_fine <- make_predictions(mdf$best_model,nd=mean_rca_grid)
+```
+
+# Maps
+
+Here's what the predictions of each look like. NOTE: simply for visualization purposes, the color ramps are truncated at -5 on the lower end (i.e., -5 log CPUE units, which equates to 0.007 kg/km2 and functionally absent)
+
+```{r,fig.width=4,fig.height=6}
+# using raster template, map
+x1 <- make_map_rca(pred_fine); x2<-make_map_glorys(pred_coarse)
+```
+
+# Apply
+
+\newpage
+## Aurora rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "aurora rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
 ```
 
 ```{r}
-# index??
-idx <- glorys_hake %>% 
-  group_by(year) %>% 
-  summarise(totidx=sum(exp(est))/1e6)
-
-idx %>% ggplot(aes(year,totidx))+geom_line()+geom_point()
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
 ```
 
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
 
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+
+\newpage
+## Big skate
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "big skate"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
 
 ```{r}
-# test with RCA grid
-rca_2007 <- build_rca_grid_yr(2007)
-
-# predict
-xpred <- make_predictions(m,nd=rca_2007)
-canary_2007 <- xpred$data
-
-testrast <- canary_2007 %>%
-  dplyr::select(Easting_m,Northing_m,est)%>%
-  st_as_sf(coords = c("Easting_m","Northing_m"),crs=26910) %>%
-  st_rasterize() %>% 
-  rast()
-
-plot(testrast*rca_mask,range=c(0,10))
-
-writeRaster(testrast,here('gf sdms','model output','test_rast_canary_2007.tif'))
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
 ```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Bocaccio
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "bocaccio"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Canary rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "canary rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Chilipepper rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "chilipepper"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Curlfin sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "curlfin sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Darkblotched rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "darkblotched rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Dover sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "dover sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## English sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "english sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Greenstriped rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "greenstriped rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Lingcod
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "lingcod"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Longnose skate
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "longnose skate"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Longspine thornyhead
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "longspine thornyhead"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Pacific grenadier
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "pacific grenadier"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Pacific ocean perch
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "pacific ocean perch"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Pacific sanddab
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "pacific sanddab"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Pacific spiny dogfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "pacific spiny dogfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Petrale sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "petrale sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Rex sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "rex sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Sablefish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "sablefish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Sharpchin rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "sharpchin rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Shortbelly rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "shortbelly rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Shortraker rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "shortraker rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Shortspine thornyhead
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "shortspine thornyhead"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Slender sole
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "slender sole"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Splitnose rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "splitnose rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Spotted ratfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "spotted ratfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Stripetail rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "stripetail rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Widow rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "widow rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Yelloweye rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "yelloweye rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::
+\newpage
+## Yellowtail rockfish
+
+```{r,message=FALSE,warning=FALSE}
+spp_name <- "yellowtail rockfish"
+mdf <- model_species(data=trawl,spp=spp_name)
+
+# Model description table, with CV log-likelihoods
+mdf$cv_ll
+bm <- mdf$best_model
+```
+
+```{r}
+# Summary of the chosen model
+sanity(bm)
+summary(bm)
+```
+
+### Plots
+:::panel-tabset
+#### QQ Plot
+```{r,message=FALSE,warning=FALSE}
+# QQ plot
+make_qq_plot(bm)
+```
+
+#### Pred/Obs
+```{r,message=FALSE,warning=FALSE}
+# predicted/observed
+make_pred_obs_plot(bm)
+```
+
+#### Spatial Residuals
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=8}
+# spatial residuals
+spatial_residuals_plot(bm)
+```
+
+#### RCA Map
+
+```{r,include=FALSE}
+# projection
+pred_coarse <- make_predictions(bm,nd=mean_glorys_grid)
+pred_fine <- make_predictions(bm,nd=mean_rca_grid)
+```
+
+```{r,message=FALSE,warning=FALSE}
+x1 <- make_map_rca(pred_fine)
+```
+
+#### GLORYS Map
+```{r,message=FALSE,warning=FALSE}
+x2<-make_map_glorys(pred_coarse)
+```
+
+```{r,include=FALSE}
+writeRaster(x1,here('gf sdms','model output',paste0(spp_name," RCA raster.tif")),overwrite=T)
+writeRaster(x2,here('gf sdms','model output',paste0(spp_name," GLORYS raster.tif")),overwrite=T)
+```
+:::

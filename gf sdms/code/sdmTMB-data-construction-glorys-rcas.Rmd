@@ -221,6 +221,7 @@ trawl <- trawl %>%
 # save raw
 write_rds(trawl,here('gf sdms','data','nwfsc_trawl_data_Nov2023.rds'))
 ```
+
 # Substrate Data
 
 ```{r}
@@ -515,10 +516,30 @@ Visualize
 glorys_pred_grid %>% filter(year==2003) %>% ggplot(aes(lonUTM,latUTM,color=thetao))+geom_point(size=0.5)+coord_equal()+scale_color_viridis()
 ```
 
+## Raster GLORYS grid
+
+Also make a version of this that is raster, for saving
+
+```{r}
+glorys_proj_rast <- glorys_pred_grid %>% 
+  filter(year==2003) %>% 
+  st_as_sf(coords=c("longitude","latitude"),crs=4326) %>% 
+  dplyr::select(gridID_phy) %>% 
+  st_rasterize() %>% rast() %>%
+  # project to epsg 26910
+  project("epsg:26910",method='near')
+plot(glorys_proj_rast)
+# grid numbers for matching
+glorys_rast_key <- values(glorys_proj_rast,dataframe=T) %>% mutate(glorys_rastID=row_number())
+```
+
+
 ## Save
 
 ```{r}
 write_rds(glorys_pred_grid,here('gf sdms','data','glorys_hindcast_grid.rds'))
+writeRaster(glorys_proj_rast,here('gf sdms','data','glorys_template_raster.tif'),overwrite=T)
+write_rds(glorys_rast_key,here('gf sdms','data','glorys_proj_raster_key.rds'))
 ```
 
 # RCA Grid
@@ -549,22 +570,19 @@ toc()
 template_rast <- testrast %>% 
   subst(0,NA)
 
-# make a raster mask (just zeroes and ones)
-template_mask <- st_rasterize(testbin) %>% rast() %>% 
-  subst(0,NA)
+# grid numbers for matching
+rca_rast_key <- values(template_rast,dataframe=T) %>% mutate(rca_rastID=row_number()) %>% 
+  filter(!is.na(Grid_ID))
 
 plot(template_rast)
-plot(template_mask)
-
-# save mask
-writeRaster(template_mask,here('gf sdms','data','rca_raster_mask.tif'))
 ```
 
 Match RCA raster to GLORYS to extract covariates
 
 ```{r}
 # find nearest neighbors
-t1 <- rca_cent %>% sample_n(10000) %>% ggplot()+geom_point(aes(Easting_m/1000,Northing_m/1000),color='red')+coord_equal()
+t1 <- rca_cent %>% sample_n(10000) %>% 
+  ggplot()+geom_point(aes(Easting_m/1000,Northing_m/1000),color='red')+coord_equal()
 t1+geom_point(data=glorys_pred_grid %>% sample_n(10000),aes(lonUTM,latUTM),shape=1)
 # looks like they line up
 
@@ -624,12 +642,41 @@ br <- st_rasterize(rca_bathy) %>% rast()
 # multiply by binary raster to set NAs
 br <- br*template_mask
 toc()
-plot(br,range=c(-1500,0))
+plot(br,range=c(0,1500))
 ```
 
 ## Save
 
 ```{r}
 write_rds(rca_base_grid,here('gf sdms','data','rca_base_prediction_grid.rds'))
+writeRaster(template_rast,here('gf sdms','data','rca_template_raster.tif'))
+write_rds(rca_rast_key,here('gf sdms','data','rca_proj_raster_key.rds'))
 ```
+
+
+# Mean Grids
+
+```{r}
+# if we want just a mean across years
+mean_glorys_grid <- glorys_pred_grid %>% 
+  group_by(longitude,latitude,lonUTM,latUTM,depth,bot,gridID_bgc_match,gridID_phy) %>% 
+  summarise(thetao=mean(thetao),o2=mean(o2)) %>% 
+  ungroup() %>%
+  mutate(year=2015)%>%  # this shoulnd't matter if we don't impose any temporal structure in the model
+    # rename the locaiton variables to align with var names in the model (i.e., lattrawlkm and lontrawlkm)
+  mutate(lattrawl_km= latUTM,lontrawl_km=lonUTM,depth_trawl=bot)
+mean_rca_grid <- rca_base_grid %>% 
+  left_join(mean_glorys_grid,by=join_by(gridID_glorys_match==gridID_phy)) %>% 
+  # rename the locaiton variables to align with var names in the model (i.e., lattrawlkm and lontrawlkm)
+  mutate(lattrawl_km=Northing_m/1000,lontrawl_km=Easting_m/1000,depth_trawl=bathy) %>%
+  filter(!is.na(bathy))
+```
+
+## Save
+
+```{r}
+write_rds(mean_glorys_grid,here('gf sdms','data','mean_glorys_prediction_grid.rds'))
+write_rds(mean_rca_grid,here('gf sdms','data','mean_rca_prediction_grid.rds'))
+```
+
 
