@@ -1,8 +1,8 @@
 ---
 title: "Groundfish SDMs in RCAs"
 author: "Owen Liu"
-format: html
-editor: visual
+format: pdf
+editor: source
 toc: true
 toc-depth: 3
 ---
