@@ -135,7 +135,7 @@ interaction_long <- as.data.frame(species_matrix) %>%
 species_list <- sort(unique(c(interaction_long$Species1, interaction_long$Species2)))
 n_species <- length(species_list)
 
-ggplot(interaction_long, aes(x = Species2, y = Species1, fill = Correlation)) +
+HSP_matrix_plot <- ggplot(interaction_long, aes(x = Species2, y = Species1, fill = Correlation)) +
   geom_tile(color = "white") +
   
   # Diverging palette (Blue = Avoidance/Deep vs Shallow, Red = High Co-occurrence)
@@ -169,3 +169,13 @@ ggplot(interaction_long, aes(x = Species2, y = Species1, fill = Correlation)) +
     # Keeps cells perfectly square so text/labels don't stretch awkwardly
     coord_fixed() 
   )
+
+# Save plot as high-resolution PNG
+ggsave(
+  filename = "HSP cooccurrence matrix plot.png",   # The name of your output file
+  plot = HSP_matrix_plot,                        # Tells R which plot object to save
+  width = 9,                                 # Physical width in inches
+  height = 8.5,                                 # Physical height in inches
+  units = "in",                               # Sets the measuring unit to inches ("in", "cm", or "mm")
+  dpi = 600                                   # CRITICAL: Sets resolution to 600 DPI
+)
