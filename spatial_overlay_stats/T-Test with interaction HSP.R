@@ -162,8 +162,8 @@ HSP_matrix_plot <- ggplot(interaction_long, aes(x = Species2, y = Species1, fill
     panel.grid.minor = element_blank(),
     
     # 45-degree rotated top labels
-    axis.text.x.top = element_text(size = 9, angle = 45, hjust = 0, vjust = 0),
-    axis.text.y = element_text(size = 9),
+    axis.text.x.top = element_text(size = 9, face = "bold", color = "black", angle = 45, hjust = 0, vjust = 0),
+    axis.text.y = element_text(size = 9, face = "bold", color = "black"),
     axis.title = element_text(size = 12, face = "bold"),
     
     # Keeps cells perfectly square so text/labels don't stretch awkwardly
