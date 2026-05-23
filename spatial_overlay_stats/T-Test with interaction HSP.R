@@ -15,7 +15,7 @@ baselines      <- read.csv("HSP_regional_baselines.csv")
 # Pivot the data from WIDE to LONG format
 main_data_long <- main_data_wide %>%
   pivot_longer(
-    cols = starts_with("mean_"),     # Tells R to grab all your species density columns
+    cols = starts_with("mean_"),     # Tells R to grab all the species density columns
     names_to = "Species_ID",         # The new column that will hold the species names
     values_to = "Mean_Density"       # The new column that will hold the density numbers
   )
@@ -32,7 +32,7 @@ head(df_monthly_z)
 
 ### STEP 2: The Hotspot Performance Evaluation (Annual)
 # To test if closures targeted above-average densities while protecting against month-to-month
-# time-dependency, collapse the data by your existing Year column and run your tests.
+# time-dependency, collapse the data by existing Year column and run tests.
 
 # Collapse monthly data into annual averages
 df_annual <- df_monthly_z %>%
@@ -58,12 +58,15 @@ HSP_species_performance <- df_annual %>%
     .groups = "drop"
   )
 
-# View your results table
+# View results table
 print(HSP_species_performance)
 
+# save HSP_species_performance df for use in the z-score plot
+write.csv(HSP_species_performance, 'HSP_species_performance.csv')
+
 ### Step 3: Create the Species Interaction Matrix (Monthly)
-# To look at fine-scale species co-occurrence patterns, pivot your full monthly dataset
-# wide and run a Spearman rank correlation across your 220 Closure_ID timestamps.
+# To look at fine-scale species co-occurrence patterns, pivot full monthly dataset
+# wide and run a Spearman rank correlation across Closure_ID timestamps.
 
 # Define custom order and clean names
 # Syntax: "QGIS_COLUMN_NAME" = "Clean Display Name"
@@ -102,7 +105,7 @@ species_order_map <- c(
   "mean_flav" = "Yellowtail"
 )
 
-# Pivot the monthly data wide by your YYYY-MM Closure_ID
+# Pivot the monthly data wide by YYYY-MM Closure_ID
 df_monthly_wide <- df_monthly_z %>%
   select(Closure_ID, Species_ID, Z_Score) %>%
   pivot_wider(names_from = Species_ID, values_from = Z_Score)
@@ -117,21 +120,21 @@ interaction_long <- as.data.frame(species_matrix) %>%
   mutate(Species1 = rownames(.)) %>%
   pivot_longer(-Species1, names_to = "Species2", values_to = "Correlation") %>%
   
-  # Find the numerical position of each species in your custom map vector
+  # Find the numerical position of each species in custom map vector
   mutate(
     pos1 = match(Species1, names(species_order_map)),
     pos2 = match(Species2, names(species_order_map))
   ) %>%
   # Only keep tiles where the row species appears BEFORE the column species 
-  # in your custom ecological order list
+  # in custom ecological order list
   filter(pos1 < pos2)
 
 ### Step 4: Plot the Interaction Heatmap
-# This uses the exact layout modifications you requested: it clusters your species in the
+# This uses the exact layout modifications requested: it clusters species in the
 # upper-right corner, keeps the axes alphabetical, rotates the top labels by 45 degrees, uses
 # thin custom grid lines that frame the blocks perfectly, and keeps the tiles perfectly square.
 
-# Get your clean sorted list of species names
+# Get clean sorted list of species names
 species_list <- sort(unique(c(interaction_long$Species1, interaction_long$Species2)))
 n_species <- length(species_list)
 
@@ -172,10 +175,10 @@ HSP_matrix_plot <- ggplot(interaction_long, aes(x = Species2, y = Species1, fill
 
 # Save plot as high-resolution PNG
 ggsave(
-  filename = "HSP cooccurrence matrix plot.png",   # The name of your output file
-  plot = HSP_matrix_plot,                        # Tells R which plot object to save
-  width = 9,                                 # Physical width in inches
-  height = 8.5,                                 # Physical height in inches
-  units = "in",                               # Sets the measuring unit to inches ("in", "cm", or "mm")
-  dpi = 600                                   # CRITICAL: Sets resolution to 600 DPI
+  filename = "HSP cooccurrence matrix plot.png",   # The name of output file
+  plot = HSP_matrix_plot,                          # Tells R which plot object to save
+  width = 9,                                       # Physical width in inches
+  height = 8.5,                                    # Physical height in inches
+  units = "in",                                    # Sets the measuring unit to inches ("in", "cm", or "mm")
+  dpi = 600                                        # CRITICAL: Sets resolution to 600 DPI
 )

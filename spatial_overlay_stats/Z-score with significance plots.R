@@ -75,7 +75,7 @@ combined_plot_data <- bind_rows(data_sdm, data_hsp) %>%
     "Habitat Suitability Probability (HSP)"
   )))
 
-# 5. Lock the order to match your species_order_map in reverse (Same as before)
+# 5. Lock the order to match the species_order_map in reverse (Same as before)
 explicit_order <- unique(species_order_map)
 combined_plot_data$Clean_Name <- factor(combined_plot_data$Clean_Name, levels = rev(explicit_order))
 
