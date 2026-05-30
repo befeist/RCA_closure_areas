@@ -65,7 +65,7 @@ data_hsp <- raw_hsp %>%
 
 # 4. Stack them vertically into one master data frame
 combined_plot_data <- bind_rows(data_sdm, data_hsp) %>%
-  mutate(Significance = ifelse(p_value < 0.05, "Significant (p < 0.05)", "Not Significant")) %>%
+  mutate(Significance = ifelse(p_value < 0.01, "Significant (p < 0.01)", "Not Significant")) %>%
   filter(!is.na(Clean_Name)) %>%
   
   # --- THE FIX TO SWAP LEFT AND RIGHT PANELS ---
@@ -95,7 +95,7 @@ z_score_plot <- ggplot(combined_plot_data, aes(x = Clean_Name, y = Mean_Z_Across
   facet_wrap(~ Model_Source, ncol = 2) + 
   
   # Color palette
-  scale_fill_manual(values = c("Significant (p < 0.05)" = "#b2182b", 
+  scale_fill_manual(values = c("Significant (p < 0.01)" = "#b2182b", 
                                "Not Significant" = "gray75")) +
   theme_minimal() +
   labs(

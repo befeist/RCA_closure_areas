@@ -42,7 +42,7 @@ df_annual <- df_monthly_z %>%
     .groups = "drop"
   )
 
-# Run a One-Sample T-Test with a protective safety check (n() >= 2)
+# Run a One-Sample, 2-tailed t-test with a protective safety check (n() >= 2)
 SDM_species_performance <- df_annual %>%
   group_by(Species_ID) %>%
   summarise(
@@ -51,7 +51,7 @@ SDM_species_performance <- df_annual %>%
     
     # The fix: Only run t.test if there are at least 2 years of data
     p_value = if(n() >= 2) {
-      t.test(Avg_Z_Score, mu = 0, alternative = "greater")$p.value
+      t.test(Avg_Z_Score, mu = 0, alternative = "two.sided")$p.value
     } else {
       NA  # Returns NA instead of crashing the script
     },
